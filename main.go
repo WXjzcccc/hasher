@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -16,7 +17,7 @@ func main() {
 	app := NewApp()
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "hasher 1.0",
+		Title:  "hasher 1.1",
 		Width:  800,
 		Height: 600,
 		AssetServer: &assetserver.Options{
@@ -24,6 +25,7 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		DisableResize:    true,
+		Windows:          &windows.Options{IsZoomControlEnabled: false},
 		DragAndDrop:      &options.DragAndDrop{EnableFileDrop: true, DisableWebViewDrop: false},
 		OnStartup:        app.startup,
 		Bind: []interface{}{

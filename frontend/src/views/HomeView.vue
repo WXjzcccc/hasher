@@ -19,6 +19,35 @@
                 :scroll="{ y: tableScrollHeight }"
                 :rowClassName="(record, index) => (index % 2 === 1 ? 'table-row-dark' : '')"
             >
+              <template
+                  #customFilterDropdown="{ setSelectedKeys, selectedKeys, confirm, clearFilters, column }"
+              >
+                <div style="padding: 8px">
+                  <a-input
+                      ref="searchInput"
+                      :placeholder="`搜索 ${column.title}`"
+                      :value="selectedKeys[0]"
+                      style="width: 188px; margin-bottom: 8px; display: block"
+                      @change="e => setSelectedKeys(e.target.value ? [e.target.value] : [])"
+                      @pressEnter="handleSearch(selectedKeys, confirm, column.dataIndex)"
+                  />
+                  <a-button
+                      type="primary"
+                      size="small"
+                      style="width: 90px; margin-right: 8px"
+                      @click="handleSearch(selectedKeys, confirm, column.dataIndex)"
+                  >
+                    <template #icon><SearchOutlined /></template>
+                    搜索
+                  </a-button>
+                  <a-button size="small" style="width: 90px" @click="handleReset(clearFilters)">
+                    重置
+                  </a-button>
+                </div>
+              </template>
+              <template #customFilterIcon="{ filtered }">
+                <search-outlined :style="{ color: filtered ? '#108ee9' : undefined }" />
+              </template>
               <template #bodyCell="{ column, record }">
                 <template v-if="column.dataIndex.startsWith('hash_')">
                   <span>
@@ -74,6 +103,7 @@ import {
     PauseCircleTwoTone,
   DeleteOutlined,
   CopyOutlined,
+  SearchOutlined,
 } from '@ant-design/icons-vue';
 import {CalHash, StopHash} from "../../wailsjs/go/main/App";
 import {OnFileDrop} from "../../wailsjs/runtime/runtime.js";
@@ -100,6 +130,7 @@ export default {
     PauseCircleTwoTone,
     DeleteOutlined,
     CopyOutlined,
+    SearchOutlined
   },
   setup() {
     // 算法选项
@@ -113,6 +144,11 @@ export default {
       { label: 'CRC64_ISO', value: 'CRC64_ISO' },
       { label: 'CRC64_ECMA', value: 'CRC64_ECMA' },
     ];
+    const searchInput = ref()
+    const state = reactive({
+      searchText: '',
+      searchedColumn: '',
+    });
     const filePaths = ref([])
     const selectedAlgorithms = ref(['SHA256']);
     const uppercase = ref(true);
@@ -125,8 +161,17 @@ export default {
     // 动态列 - 根据选择的算法生成
     const dynamicColumns = computed(() => {
       const baseColumns = [
-        { title: '文件名', dataIndex: 'fileName', key: 'fileName', width: 200, fixed: 'left' },
-        { title: '大小', dataIndex: 'fileSize', key: 'fileSize', width: 100 },
+        { title: '文件名', dataIndex: 'fileName', key: 'fileName', width: 200, fixed: 'left' ,ellipsis: true,
+          customFilterDropdown: true,
+          onFilter: (value, record) => record.fileName.toString().toLowerCase().includes(value.toLowerCase()),
+          onFilterDropdownOpenChange: visible => {
+            if (visible) {
+              setTimeout(() => {
+                searchInput.value.focus();
+              }, 100);
+            }
+          },},
+        { title: '大小', dataIndex: 'fileSize', key: 'fileSize', width: 100 ,ellipsis: true},
       ];
 
       // 添加算法列
@@ -135,13 +180,22 @@ export default {
         dataIndex: `hash_${algorithm.toLowerCase()}`,
         key: `hash_${algorithm.toLowerCase()}`,
         width: 250,
+        customFilterDropdown: true,
+        onFilter: (value, record) => record[`hash_${algorithm.toLowerCase()}`].toString().toLowerCase().includes(value.toLowerCase()),
+        onFilterDropdownOpenChange: visible => {
+          if (visible) {
+            setTimeout(() => {
+              searchInput.value.focus();
+            }, 100);
+          }
+        },
       }));
       const fullPathColumn = [
-        { title: '文件完整路径', dataIndex: 'filePath', key: 'filePath',width: 200},
+        { title: '文件完整路径', dataIndex: 'filePath', key: 'filePath',width: 100,ellipsis: true},
       ]
       return [...baseColumns, ...algorithmColumns, ...fullPathColumn];
     });
-
+    console.log(dynamicColumns.value)
     // 表格滚动高度
     const tableScrollHeight = ref(500);
 
@@ -220,7 +274,15 @@ export default {
         }
       },false)
     };
-
+    const handleSearch = (selectedKeys, confirm, dataIndex) => {
+      confirm();
+      state.searchText = selectedKeys[0];
+      state.searchedColumn = dataIndex;
+    };
+    const handleReset = clearFilters => {
+      clearFilters({ confirm: true });
+      state.searchText = '';
+    };
     watch(selectedAlgorithms, (newAlgorithms, oldAlgorithms) => {
       // 找出新增的算法
       const addedAlgorithms = newAlgorithms.filter(
@@ -310,6 +372,8 @@ export default {
       copyResults,
       copyResults2,
       stopProcess,
+      handleSearch,
+      handleReset,
     };
   },
 };
