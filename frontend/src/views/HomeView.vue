@@ -30,6 +30,7 @@
                       style="width: 188px; margin-bottom: 8px; display: block"
                       @change="e => setSelectedKeys(e.target.value ? [e.target.value] : [])"
                       @pressEnter="handleSearch(selectedKeys, confirm, column.dataIndex)"
+
                   />
                   <a-button
                       type="primary"
@@ -374,6 +375,7 @@ export default {
       stopProcess,
       handleSearch,
       handleReset,
+      searchInput,
     };
   },
 };
