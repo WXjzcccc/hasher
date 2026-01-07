@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/emmansun/gmsm/sm3"
 	"hash"
 	"hash/crc32"
 	"hash/crc64"
@@ -20,6 +19,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+
+	"github.com/emmansun/gmsm/sm3"
 )
 
 type HashResult struct {
@@ -65,9 +66,19 @@ func NewHasher2(filePath string) Hasher {
 	var hasher Hasher
 	hasher.FilePath = filePath
 	hasher.FileName = filepath.Base(filePath)
-	info, err := os.Stat(filePath)
+	// 检查是否为符号链接
+	info, err := os.Lstat(filePath)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("获取文件信息时出错: %v\n", err)
+		hasher.FileSize = fmt.Sprintf("获取文件信息错误: %v", err)
+		hasher.HashResult = HashResult{}
+		return hasher
+	}
+	// 如果是符号链接，跳过
+	if info.Mode()&os.ModeSymlink != 0 {
+		hasher.FileSize = "符号链接，跳过处理"
+		hasher.HashResult = HashResult{}
+		return hasher
 	}
 	hasher.FileSize = getSize(info.Size())
 	hasher.HashResult = HashResult{}
@@ -83,6 +94,21 @@ func walkDir(dirPath string) []string {
 		}
 		// 跳过根目录自身
 		if path == dirPath {
+			return nil
+		}
+		// 检查是否为符号链接
+		lstatInfo, err := os.Lstat(path)
+		if err != nil {
+			log.Printf("检查 %q 是否为符号链接时出错: %v\n", path, err)
+			return nil
+		}
+		// 如果是符号链接，跳过
+		if lstatInfo.Mode()&os.ModeSymlink != 0 {
+			log.Printf("[符号链接] %s，跳过处理\n", path)
+			// 如果是指向目录的符号链接，不要继续遍历
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		// 计算相对于根目录的路径
@@ -105,10 +131,18 @@ func walkDir(dirPath string) []string {
 func getHashers(filePaths []string) ([]Hasher, error) {
 	var hashers []Hasher
 	for _, filePath := range filePaths {
-		fileInfo, err := os.Stat(filePath)
+		// 使用Lstat而不是Stat，避免跟随符号链接
+		fileInfo, err := os.Lstat(filePath)
 		if err != nil {
-			return nil, err
+			log.Printf("获取文件信息时出错: %v\n", err)
+			continue // 继续处理其他文件
 		}
+		// 检查是否为符号链接
+		if fileInfo.Mode()&os.ModeSymlink != 0 {
+			log.Printf("%s 是符号链接，跳过处理\n", filePath)
+			continue
+		}
+		// 如果是目录，遍历目录
 		if fileInfo.IsDir() {
 			files := walkDir(filePath)
 			if files != nil {
@@ -117,10 +151,10 @@ func getHashers(filePaths []string) ([]Hasher, error) {
 				}
 			}
 		} else {
+			// 如果是普通文件，直接处理
 			hashers = append(hashers, NewHasher2(filePath))
 		}
 	}
-	fmt.Println(hashers)
 	return hashers, nil
 }
 
@@ -171,6 +205,17 @@ func CalculateFileHashes(filePath string, hashOption HashOption, ctx context.Con
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
+	}
+
+	// 检查是否为符号链接
+	lstatInfo, err := os.Lstat(filePath)
+	if err != nil {
+		return nil, err
+	}
+	// 如果是符号链接，跳过
+	if lstatInfo.Mode()&os.ModeSymlink != 0 {
+		log.Printf("%s 是符号链接，跳过处理\n", filePath)
+		return nil, nil
 	}
 
 	file, err := os.Open(filePath)
@@ -365,12 +410,19 @@ func CalculateMultipleFilesHashesWithLimit(hashers []Hasher, maxWorkers int, has
 	// 收集结果
 	for res := range resultChan {
 		if res.Error != nil {
-			return nil, res.Error
+			log.Printf("处理文件 %s 时出错: %v\n", res.Hashers.FilePath, res.Error)
+			// 继续处理其他文件，而不是返回错误
+			continue
 		}
-		mu.Lock()
-		res.Hashers.HashResult = *res.Result
-		results = append(results, res.Hashers)
-		mu.Unlock()
+		// 如果结果为nil（可能是符号链接），跳过
+		if res.Result != nil {
+			mu.Lock()
+			res.Hashers.HashResult = *res.Result
+			results = append(results, res.Hashers)
+			mu.Unlock()
+		} else {
+			log.Printf("跳过处理符号链接: %s\n", res.Hashers.FilePath)
+		}
 	}
 	return results, nil
 }
@@ -386,15 +438,18 @@ func CalHash(files []string, hashOptionStr string) []Hasher {
 	var hashOption HashOption
 	err := json.Unmarshal([]byte(hashOptionStr), &hashOption)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("解析哈希选项时出错: %v\n", err)
+		return []Hasher{}
 	}
 	hashers, err := getHashers(files)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("获取文件列表时出错: %v\n", err)
+		return []Hasher{}
 	}
 	results, err := CalculateMultipleFilesHashesWithLimit(hashers, 4, hashOption, ctx)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("计算哈希值时出错: %v\n", err)
+		return []Hasher{}
 	}
 	return results
 }

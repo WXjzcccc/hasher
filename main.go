@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
 	"github.com/wailsapp/wails/v2"
@@ -17,7 +18,7 @@ func main() {
 	app := NewApp()
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "hasher 1.1",
+		Title:  "hasher 1.2",
 		Width:  800,
 		Height: 600,
 		AssetServer: &assetserver.Options{

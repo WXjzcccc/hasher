@@ -1,114 +1,74 @@
 <template>
     <div class="full-page-container" @drop="handleDrop" @dragover.prevent>
         <a-layout>
-            <a-layout-header class="header">
-                <h1>
-                    哈希计算工具
-                    {{
-                        filePaths.length > 0
-                            ? `已选择${filePaths.length}个项目`
-                            : ""
-                    }}
-                </h1>
-            </a-layout-header>
-
             <a-layout-content class="content">
                 <!-- 主内容区使用flex布局 -->
                 <div class="main-layout">
                     <!-- 表格容器 - 自动计算高度 -->
                     <div class="table-wrapper">
-                        <a-table
-                            :dataSource="tableData"
-                            :columns="dynamicColumns"
-                            :pagination="false"
-                            bordered
-                            size="small"
-                            :scroll="{ y: tableScrollHeight }"
-                            :rowClassName="
-                                (record, index) =>
-                                    index % 2 === 1 ? 'table-row-dark' : ''
-                            "
-                        >
-                            <template
-                                #customFilterDropdown="{
-                                    setSelectedKeys,
-                                    selectedKeys,
-                                    confirm,
-                                    clearFilters,
-                                    column,
-                                }"
-                            >
+                        <a-table :dataSource="tableData" :columns="dynamicColumns" :pagination="false" bordered
+                            size="small" :scroll="{ x: 'max-content', y: tableScrollHeight }" :rowClassName="(record, index) =>
+                                index % 2 === 1 ? 'table-row-dark' : ''
+                                ">
+                            <template #customFilterDropdown="{
+                                setSelectedKeys,
+                                selectedKeys,
+                                confirm,
+                                clearFilters,
+                                column,
+                            }">
                                 <div style="padding: 8px">
-                                    <a-input
-                                        ref="searchInput"
-                                        :placeholder="`搜索 ${column.title}`"
-                                        :value="selectedKeys[0]"
-                                        style="
+                                    <a-input ref="searchInput" :placeholder="`搜索 ${column.title}`"
+                                        :value="selectedKeys[0]" style="
                                             width: 188px;
                                             margin-bottom: 8px;
                                             display: block;
-                                        "
-                                        @change="
+                                        " @change="
                                             (e) =>
                                                 setSelectedKeys(
                                                     e.target.value
                                                         ? [e.target.value]
                                                         : [],
                                                 )
-                                        "
-                                        @pressEnter="
+                                        " @pressEnter="
                                             handleSearch(
                                                 selectedKeys,
                                                 confirm,
                                                 column.dataIndex,
                                             )
-                                        "
-                                    />
-                                    <a-button
-                                        type="primary"
-                                        size="small"
-                                        style="width: 90px; margin-right: 8px"
-                                        @click="
-                                            handleSearch(
-                                                selectedKeys,
-                                                confirm,
-                                                column.dataIndex,
-                                            )
-                                        "
-                                    >
-                                        <template #icon
-                                            ><SearchOutlined
-                                        /></template>
+                                            " />
+                                    <a-button type="primary" size="small" style="width: 90px; margin-right: 8px" @click="
+                                        handleSearch(
+                                            selectedKeys,
+                                            confirm,
+                                            column.dataIndex,
+                                        )
+                                        ">
+                                        <template #icon>
+                                            <SearchOutlined />
+                                        </template>
                                         搜索
                                     </a-button>
-                                    <a-button
-                                        size="small"
-                                        style="width: 90px"
-                                        @click="handleReset(clearFilters)"
-                                    >
+                                    <a-button size="small" style="width: 90px" @click="handleReset(clearFilters)">
                                         重置
                                     </a-button>
                                 </div>
                             </template>
                             <template #customFilterIcon="{ filtered }">
-                                <search-outlined
-                                    :style="{
-                                        color: filtered ? '#108ee9' : undefined,
-                                    }"
-                                />
+                                <search-outlined :style="{
+                                    color: filtered ? '#108ee9' : undefined,
+                                }" />
                             </template>
                             <template #bodyCell="{ column, record }">
-                                <template
-                                    v-if="column.dataIndex.startsWith('hash_')"
-                                >
+                                <template v-if="column.dataIndex.startsWith('hash_')">
                                     <span>
                                         {{
                                             uppercase
                                                 ? record[
-                                                      column.dataIndex
-                                                  ].toUpperCase()
+                                                    column.dataIndex
+                                                ].toUpperCase()
                                                 : record[column.dataIndex] ||
-                                                  "待计算"
+                                                "待计算"
                                         }}
                                     </span>
                                 </template>
@@ -119,47 +79,39 @@
                     <!-- 控制面板 - 固定高度 -->
                     <div class="control-panel">
                         <div class="options-group">
-                            <a-checkbox-group
-                                v-model:value="selectedAlgorithms"
-                                :options="algorithmOptions"
-                            />
-                            <a-checkbox v-model:checked="uppercase"
-                                >结果大写</a-checkbox
-                            >
+                            <a-checkbox-group v-model:value="selectedAlgorithms" :options="algorithmOptions" />
+                            <a-checkbox v-model:checked="uppercase">结果大写</a-checkbox>
                         </div>
 
                         <div class="button-group">
-                            <a-button
-                                type="primary"
-                                @click="startProcess"
-                                :loading="processing"
-                            >
-                                <template #icon
-                                    ><PlayCircleOutlined
-                                /></template>
+                            <a-button type="primary" @click="startProcess" :loading="processing">
+                                <template #icon>
+                                    <PlayCircleOutlined />
+                                </template>
                                 开始
                             </a-button>
-                            <a-button
-                                danger
-                                @click="stopProcess"
-                                :disabled="!processing"
-                            >
-                                <template #icon
-                                    ><PauseCircleTwoTone
-                                        two-tone-color="#ff0000"
-                                /></template>
+                            <a-button danger @click="stopProcess" :disabled="!processing">
+                                <template #icon>
+                                    <PauseCircleTwoTone two-tone-color="#ff0000" />
+                                </template>
                                 停止
                             </a-button>
                             <a-button @click="clearResults">
-                                <template #icon><DeleteOutlined /></template>
+                                <template #icon>
+                                    <DeleteOutlined />
+                                </template>
                                 清除
                             </a-button>
                             <a-button type="dashed" @click="copyResults">
-                                <template #icon><CopyOutlined /></template>
+                                <template #icon>
+                                    <CopyOutlined />
+                                </template>
                                 复制
                             </a-button>
                             <a-button type="dashed" @click="copyResults2">
-                                <template #icon><CopyOutlined /></template>
+                                <template #icon>
+                                    <CopyOutlined />
+                                </template>
                                 复制（不带完整路径）
                             </a-button>
                         </div>
@@ -192,18 +144,7 @@ import { CalHash, StopHash } from "../../wailsjs/go/main/App";
 import { OnFileDrop } from "../../wailsjs/runtime/runtime.js";
 
 // 模拟文件数据
-const mockFiles = [
-    { fileName: "", fileSize: "" },
-    { fileName: "", fileSize: "" },
-    { fileName: "", fileSize: "" },
-    { fileName: "", fileSize: "" },
-    { fileName: "", fileSize: "" },
-    { fileName: "", fileSize: "" },
-    { fileName: "", fileSize: "" },
-    { fileName: "", fileSize: "" },
-    { fileName: "", fileSize: "" },
-    { fileName: "", fileSize: "" },
-];
+const mockFiles = Array.from({ length: 50 }, () => ({ fileName: "", fileSize: "" }));
 
 export default {
     components: {
@@ -248,8 +189,9 @@ export default {
                     dataIndex: "fileName",
                     key: "fileName",
                     width: 200,
+                    maxWidth: 500,
                     fixed: "left",
-                    ellipsis: true,
+                    wordWrap: true,
                     customFilterDropdown: true,
                     onFilter: (value, record) =>
                         record.fileName
@@ -269,7 +211,8 @@ export default {
                     dataIndex: "fileSize",
                     key: "fileSize",
                     width: 100,
-                    ellipsis: true,
+                    maxWidth: 150,
+                    wordWrap: true,
                 },
             ];
 
@@ -280,6 +223,8 @@ export default {
                     dataIndex: `hash_${algorithm.toLowerCase()}`,
                     key: `hash_${algorithm.toLowerCase()}`,
                     width: 250,
+                    maxWidth: 350,
+                    wordWrap: true,
                     customFilterDropdown: true,
                     onFilter: (value, record) =>
                         record[`hash_${algorithm.toLowerCase()}`]
@@ -300,8 +245,9 @@ export default {
                     title: "文件完整路径",
                     dataIndex: "filePath",
                     key: "filePath",
-                    width: 100,
-                    ellipsis: true,
+                    width: 300,
+                    maxWidth: 800,
+                    wordWrap: true,
                 },
             ];
             return [...baseColumns, ...algorithmColumns, ...fullPathColumn];
@@ -312,13 +258,11 @@ export default {
 
         // 计算表格可用高度
         const calculateTableHeight = () => {
-            const headerHeight = 64; // 头部高度
             const controlPanelHeight = 125; // 控制面板高度(根据实际内容调整)
             const margins = 48; // 边距总和
 
             tableScrollHeight.value =
                 window.innerHeight -
-                headerHeight -
                 controlPanelHeight -
                 margins;
         };
@@ -393,6 +337,21 @@ export default {
             OnFileDrop((x, y, paths) => {
                 if (paths.length > 0) {
                     filePaths.value = paths;
+
+                    // 将文件名填入表格占位
+                    tableData.value = paths.map((filePath) => {
+                        const row = {};
+                        // 提取文件名（不包含路径）
+                        const fileName = filePath.split('\\').pop().split('/').pop();
+                        row["fileName"] = fileName;
+                        row["fileSize"] = "等待开始";
+                        // 为每个算法初始化空值
+                        selectedAlgorithms.value.forEach((algorithm) => {
+                            row[`hash_${algorithm.toLowerCase()}`] = "";
+                        });
+                        row["filePath"] = filePath;
+                        return row;
+                    });
                 }
             }, false);
         };
@@ -540,20 +499,6 @@ export default {
 }
 
 /* 布局样式 */
-.header {
-    background: #fff;
-    padding: 0 24px;
-    box-shadow: 0 1px 4px rgba(0, 21, 41, 0.08);
-    display: flex;
-    align-items: center;
-    height: 64px;
-    flex-shrink: 0;
-}
-
-.header h1 {
-    margin: 0;
-    font-size: 18px;
-}
 
 .content {
     flex: 1;
@@ -578,11 +523,10 @@ export default {
 /* 表格容器 */
 .table-wrapper {
     flex: 1;
-    min-height: 200px;
+    height: 100%;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    margin-bottom: 16px;
 }
 
 /* 控制面板 */
@@ -609,6 +553,32 @@ export default {
 
 :deep(.ant-table-body) {
     overflow: auto !important;
+    word-break: break-all;
+}
+
+:deep(.ant-table-cell) {
+    white-space: normal;
+    word-break: break-all;
+}
+
+/* 滚动条样式优化 */
+:deep(::-webkit-scrollbar) {
+    width: 6px;
+    height: 6px;
+}
+
+:deep(::-webkit-scrollbar-track) {
+    background: #f1f1f1;
+    border-radius: 3px;
+}
+
+:deep(::-webkit-scrollbar-thumb) {
+    background: #c1c1c1;
+    border-radius: 3px;
+}
+
+:deep(::-webkit-scrollbar-thumb:hover) {
+    background: #a8a8a8;
 }
 
 /* 响应式调整 */
