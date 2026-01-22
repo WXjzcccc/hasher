@@ -4,6 +4,11 @@
             <a-layout-content class="content">
                 <!-- 主内容区使用flex布局 -->
                 <div class="main-layout">
+                    <!-- 进度条 -->
+                    <div class="progress-container" v-if="processing">
+                        <a-progress :percent="progressPercentage" status="active" :show-info="true" />
+                    </div>
+
                     <!-- 表格容器 - 自动计算高度 -->
                     <div class="table-wrapper">
                         <a-table :dataSource="tableData" :columns="dynamicColumns" :pagination="false" bordered
@@ -141,7 +146,7 @@ import {
     SearchOutlined,
 } from "@ant-design/icons-vue";
 import { CalHash, StopHash } from "../../wailsjs/go/main/App";
-import { OnFileDrop } from "../../wailsjs/runtime/runtime.js";
+import { OnFileDrop, EventsOn } from "../../wailsjs/runtime/runtime.js";
 
 // 模拟文件数据
 const mockFiles = Array.from({ length: 50 }, () => ({ fileName: "", fileSize: "" }));
@@ -180,6 +185,11 @@ export default {
 
         // 表格数据 - 根据选择的文件和算法动态生成
         const tableData = ref([]);
+
+        // 进度条相关变量
+        const progressPercentage = ref(0);
+        const totalFiles = ref(0);
+        const completedFiles = ref(0);
 
         // 动态列 - 根据选择的算法生成
         const dynamicColumns = computed(() => {
@@ -256,6 +266,30 @@ export default {
         // 表格滚动高度
         const tableScrollHeight = ref(500);
 
+        let computedFiles = 0;
+        EventsOn("FILEDONE", (filePath, fileSize, data, totalFilesCount) => {
+            computedFiles++;
+            console.log(filePath, fileSize, data, totalFilesCount);
+
+            // 更新进度条（使用防抖）
+            totalFiles.value = totalFilesCount;
+            completedFiles.value = computedFiles;
+            if (totalFilesCount > 0) {
+                const percentage = Math.round((computedFiles / totalFilesCount) * 100);
+                updateProgressDebounced(percentage);
+            }
+
+            const row = {};
+            row["fileName"] = filePath.split("\\").pop();
+            row["fileSize"] = fileSize;
+            selectedAlgorithms.value.forEach((algorithm) => {
+                row[`hash_${algorithm.toLowerCase()}`] =
+                    data[algorithm];
+            });
+            row["filePath"] = filePath;
+            tableData.value.push(row);
+        })
+
         // 计算表格可用高度
         const calculateTableHeight = () => {
             const controlPanelHeight = 125; // 控制面板高度(根据实际内容调整)
@@ -269,6 +303,7 @@ export default {
 
         // 初始化表格数据
         const initTableData = () => {
+            tableData.value = [];
             tableData.value = mockFiles.map((file) => {
                 const row = { ...file };
                 // 为每个算法初始化空值
@@ -280,8 +315,30 @@ export default {
             });
         };
 
+        // 防抖函数
+        const debounce = (func, wait) => {
+            let timeout;
+            return function (...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), wait);
+            };
+        };
+
+        // 防抖处理的进度条更新函数
+        const updateProgressDebounced = debounce((percentage) => {
+            progressPercentage.value = percentage;
+        }, 80); // 100ms防抖延迟
+
         // 开始处理
         const startProcess = () => {
+            tableData.value = [];
+
+            // 重置进度条
+            computedFiles = 0;
+            progressPercentage.value = 0;
+            totalFiles.value = 0;
+            completedFiles.value = 0;
+
             let option = {};
             selectedAlgorithms.value.map((algorithm) => {
                 option[algorithm] = true;
@@ -297,28 +354,15 @@ export default {
             const start = performance.now();
             CalHash(filePaths.value, JSON.stringify(option)).then(
                 (result, err) => {
-                    // message.info(JSON.stringify(hashers))
-                    tableData.value = [];
-                    result.forEach((hasher, index, array) => {
-                        const row = {};
-                        row["fileName"] = hasher["fileName"];
-                        row["fileSize"] = hasher["fileSize"];
-                        selectedAlgorithms.value.forEach((algorithm) => {
-                            row[`hash_${algorithm.toLowerCase()}`] =
-                                hasher["hashResult"][algorithm];
-                        });
-                        row["filePath"] = hasher["filePath"];
-                        tableData.value.push(row);
-                    });
                     const end = performance.now();
                     const elapsed = end - start; // 毫秒数（高精度）
                     console.log(`耗时: ${elapsed.toFixed(3)}ms`);
+                    // 确保最终进度为100%
+                    progressPercentage.value = 100;
                     message.success(`计算完成！耗时: ${elapsed.toFixed(3)}ms`);
                     processing.value = false;
                 },
             );
-            // 重新初始化数据
-            initTableData();
             processing.value = true;
             message.info("开始计算哈希值...");
         };
@@ -475,6 +519,7 @@ export default {
             tableScrollHeight,
             processing,
             filePaths,
+            progressPercentage,
             startProcess,
             handleDrop,
             clearResults,
@@ -518,6 +563,14 @@ export default {
 /* 斑马纹效果 */
 .table-row-dark {
     background-color: #fafafa;
+}
+
+/* 进度条容器 */
+.progress-container {
+    margin-bottom: 10px;
+    padding: 10px;
+    background: #fafafa;
+    border-radius: 4px;
 }
 
 /* 表格容器 */

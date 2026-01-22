@@ -18,7 +18,7 @@ func main() {
 	app := NewApp()
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "hasher 1.2",
+		Title:  "hasher 1.3",
 		Width:  800,
 		Height: 600,
 		AssetServer: &assetserver.Options{

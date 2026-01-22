@@ -28,7 +28,7 @@ func (a *App) Greet(name string) string {
 }
 
 func (a *App) CalHash(files []string, hashOptionStr string) []Hasher {
-	hashResults := CalHash(files, hashOptionStr)
+	hashResults := CalHash(files, hashOptionStr, a.ctx)
 	log.Printf("计算完成%v\n", hashResults)
 	return hashResults
 }

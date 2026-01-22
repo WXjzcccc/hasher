@@ -21,6 +21,7 @@ import (
 	"sync"
 
 	"github.com/emmansun/gmsm/sm3"
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type HashResult struct {
@@ -53,9 +54,11 @@ type HashOption struct {
 }
 
 var (
-	ctx    context.Context
-	cancel context.CancelFunc
-	mu     sync.Mutex // 保护全局变量
+	ctx        context.Context
+	appCtx     context.Context
+	cancel     context.CancelFunc
+	mu         sync.Mutex // 保护全局变量
+	totalFiles int
 )
 
 func NewHasher() *Hasher {
@@ -303,6 +306,7 @@ func CalculateFileHashes(filePath string, hashOption HashOption, ctx context.Con
 	if hashOption.CRC64_ECMA {
 		hashResult.CRC64_ECMA = hex.EncodeToString(hashers["crc64_ECMA"].Sum(nil))
 	}
+	wruntime.EventsEmit(appCtx, "FILEDONE", filePath, getSize(fileSize), &hashResult, totalFiles)
 	return &hashResult, nil
 }
 
@@ -427,7 +431,8 @@ func CalculateMultipleFilesHashesWithLimit(hashers []Hasher, maxWorkers int, has
 	return results, nil
 }
 
-func CalHash(files []string, hashOptionStr string) []Hasher {
+func CalHash(files []string, hashOptionStr string, ctx context.Context) []Hasher {
+	appCtx = ctx
 	mu.Lock()
 	if cancel != nil {
 		cancel() // 取消之前的操作
@@ -442,6 +447,7 @@ func CalHash(files []string, hashOptionStr string) []Hasher {
 		return []Hasher{}
 	}
 	hashers, err := getHashers(files)
+	totalFiles = len(hashers)
 	if err != nil {
 		log.Printf("获取文件列表时出错: %v\n", err)
 		return []Hasher{}
