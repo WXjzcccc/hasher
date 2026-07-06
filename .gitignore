@@ -2,3 +2,6 @@ build/bin
 node_modules
 frontend/dist
 .idea
+.zig-cache
+zig-out
+zig-pkg

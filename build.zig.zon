@@ -1,0 +1,24 @@
+.{
+    .name = .hasher,
+    .version = "2.0.0",
+    .fingerprint = 0x68f86871a02b8794,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zgui = .{
+            .url = "https://github.com/zig-gamedev/zgui/archive/refs/heads/main.tar.gz",
+            .hash = "zgui-0.6.0-dev--L6sZJhIbgAjWdK5h6xuVUrsOcD-RdqEOEPf03Zgi4mF",
+        },
+        .zglfw = .{
+            .url = "https://github.com/zig-gamedev/zglfw/archive/0dd29d8073487c9fe1e45e6b729b3aac271d5a71.tar.gz",
+            .hash = "zglfw-0.10.0-dev-zgVDNIG4IQBWN_sfMD-xfC9bJS2hbBN2W7jNlDLovcdC",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "assets",
+        "src",
+        "README.md",
+        "LICENSE",
+    },
+}
