@@ -1,2 +1,2 @@
-#define IDI_APP 1
+#define IDI_APP 101
 IDI_APP ICON "assets/hasher.ico"

@@ -5,3 +5,4 @@ frontend/dist
 .zig-cache
 zig-out
 zig-pkg
+.trae

@@ -122,6 +122,7 @@ const UiState = struct {
     render_scale: f32 = 1.0,
     filter_column: i32 = @intFromEnum(FilterColumn.all),
     filter_open: bool = false,
+    filter_button_rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     search_buf: [512:0]u8 = @splat(0),
     search_len: usize = 0,
     search_active: bool = false,
@@ -526,7 +527,9 @@ fn drawToolbar(ui: *UiState, w: f32) void {
     x += scale(ui, 132);
     if (toolButton(ui, rect(x, y, scale(ui, 124), scale(ui, 30)), .save_no_path, "保存无路径")) saveRows(ui, false) catch {};
     x += scale(ui, 132);
-    if (filterButton(ui, rect(x, y, scale(ui, 128), scale(ui, 30)))) ui.filter_open = !ui.filter_open;
+    const filter_rect = rect(x, y, scale(ui, 128), scale(ui, 30));
+    ui.filter_button_rect = filter_rect;
+    if (filterButton(ui, filter_rect)) ui.filter_open = !ui.filter_open;
     x += scale(ui, 136);
     drawSearch(ui, rect(x, y, scale(ui, 270), scale(ui, 30)));
     x += scale(ui, 278);
@@ -796,12 +799,18 @@ fn filterButton(ui: *UiState, r: Rect) bool {
 }
 
 fn drawFilterPopup(ui: *UiState) void {
-    const x = scale(ui, 522);
-    const y = scale(ui, 74);
     const row_h = scale(ui, 24);
-    const w = scale(ui, 154);
+    const w = @max(ui.filter_button_rect.width, scale(ui, 154));
+    const popup_h = row_h * @as(f32, @floatFromInt(filter_labels.len));
+    const screen_w: f32 = @floatFromInt(rl.getScreenWidth());
+    const screen_h: f32 = @floatFromInt(rl.getScreenHeight());
+    const x = std.math.clamp(ui.filter_button_rect.x, scale(ui, 4), @max(scale(ui, 4), screen_w - w - scale(ui, 4)));
+    var y = ui.filter_button_rect.y + ui.filter_button_rect.height + scale(ui, 3);
+    if (y + popup_h > screen_h - scale(ui, 4)) {
+        y = @max(scale(ui, 4), ui.filter_button_rect.y - popup_h - scale(ui, 3));
+    }
     const mouse = rl.getMousePosition();
-    const popup = rect(x, y, w, row_h * @as(f32, @floatFromInt(filter_labels.len)));
+    const popup = rect(x, y, w, popup_h);
     rl.drawRectangleRec(popup, colors.panel);
     rl.drawRectangleLinesEx(popup, 1, colors.border);
     for (filter_labels, 0..) |label, i| {
