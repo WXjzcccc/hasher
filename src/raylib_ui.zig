@@ -171,7 +171,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
         .window_highdpi = true,
         .vsync_hint = true,
     });
-    rl.initWindow(1180, 760, "Hasher");
+    rl.initWindow(1180, 760, "Hasher 1.4");
     defer rl.closeWindow();
     setAppIcon();
     rl.setExitKey(.null);
@@ -497,7 +497,7 @@ fn drawTitleBar(ui: *UiState, w: f32) void {
             Color.init(255, 255, 255, 255),
         );
     }
-    drawTextClipped(ui, "Hasher", rect(scale(ui, 34), scale(ui, 7), scale(ui, 180), scale(ui, 22)), colors.text);
+    drawTextClipped(ui, "Hasher 1.4", rect(scale(ui, 34), scale(ui, 7), scale(ui, 180), scale(ui, 22)), colors.text);
     var x = w - scale(ui, 112);
     if (iconButton(ui, rect(x, scale(ui, 4), scale(ui, 32), scale(ui, 26)), .minimize, colors.button)) rl.minimizeWindow();
     x += scale(ui, 36);

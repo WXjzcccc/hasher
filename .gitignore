@@ -6,3 +6,4 @@ frontend/dist
 zig-out
 zig-pkg
 .trae
+build.ps1
