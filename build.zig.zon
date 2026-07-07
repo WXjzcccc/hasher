@@ -4,13 +4,9 @@
     .fingerprint = 0x68f86871a02b8794,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .zgui = .{
-            .url = "https://github.com/zig-gamedev/zgui/archive/refs/heads/main.tar.gz",
-            .hash = "zgui-0.6.0-dev--L6sZJhIbgAjWdK5h6xuVUrsOcD-RdqEOEPf03Zgi4mF",
-        },
-        .zglfw = .{
-            .url = "https://github.com/zig-gamedev/zglfw/archive/0dd29d8073487c9fe1e45e6b729b3aac271d5a71.tar.gz",
-            .hash = "zglfw-0.10.0-dev-zgVDNIG4IQBWN_sfMD-xfC9bJS2hbBN2W7jNlDLovcdC",
+        .raylib_zig = .{
+            .url = "git+https://github.com/raylib-zig/raylib-zig#90da3e00681c713e71b126432b9bb0a5cc6c02ad",
+            .hash = "raylib_zig-5.6.0-dev-KE8REKNmBQDek2Sz27ULioxYpY9IYR0K0CeIC-iJRLCI",
         },
     },
     .paths = .{

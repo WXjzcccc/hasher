@@ -88,7 +88,7 @@ pub const HashResult = struct {
 };
 
 const Crc64Iso = std.hash.crc.Crc64GoIso;
-const Crc64Ecma = std.hash.crc.Crc64Ecma182;
+const Crc64Ecma = std.hash.crc.Crc64Xz;
 
 pub fn calculateFile(
     allocator: std.mem.Allocator,
@@ -112,13 +112,13 @@ pub fn calculateFile(
     var crc32 = std.hash.crc.Crc32.init();
     var crc64_iso = Crc64Iso.init();
     var crc64_ecma = Crc64Ecma.init();
-    var offset: u64 = 0;
-
     while (true) {
         if (stop.load(.acquire)) return error.Stopped;
-        const n = try file.readPositional(io, &.{buffer}, offset);
-        if (n == 0) break;
-        offset += n;
+        const n = file.readStreaming(io, &.{buffer}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+        if (n == 0) continue;
         const chunk = buffer[0..n];
         if (options.md5) md5.update(chunk);
         if (options.sha1) sha1.update(chunk);
@@ -164,7 +164,11 @@ fn bytesToHex(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
 }
 
 fn intHex(allocator: std.mem.Allocator, comptime T: type, value: T) ![]u8 {
-    return try std.fmt.allocPrint(allocator, "{x:0>8}", .{value});
+    return switch (@bitSizeOf(T)) {
+        32 => try std.fmt.allocPrint(allocator, "{x:0>8}", .{value}),
+        64 => try std.fmt.allocPrint(allocator, "{x:0>16}", .{value}),
+        else => @compileError("unsupported integer hash width"),
+    };
 }
 
 pub fn determineBufferSize(file_size: u64) usize {
@@ -181,4 +185,14 @@ test "buffer sizing mirrors original thresholds" {
     try std.testing.expectEqual(@as(usize, 512 * 1024), determineBufferSize(10));
     try std.testing.expectEqual(@as(usize, 1024 * 1024), determineBufferSize(11 * 1024 * 1024));
     try std.testing.expectEqual(@as(usize, 2 * 1024 * 1024), determineBufferSize(101 * 1024 * 1024));
+}
+
+test "crc64 ecma matches Go crc64.ECMA" {
+    try std.testing.expectEqual(@as(u64, 0x995dc9bbdf1939fa), Crc64Ecma.hash("123456789"));
+}
+
+test "integer hash formatting keeps crc64 leading zeroes" {
+    const out = try intHex(std.testing.allocator, u64, 0x026684c3e084a8f6);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("026684c3e084a8f6", out);
 }
