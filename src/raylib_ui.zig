@@ -3,9 +3,9 @@ const rl = @import("raylib");
 
 const hash = @import("hash/core.zig");
 const worker = @import("worker.zig");
+const font_atlas = @import("font_atlas.zig");
 const embedded_assets = @import("embedded_assets");
 
-extern "user32" fn SetProcessDpiAwarenessContext(value: ?*anyopaque) callconv(.winapi) bool;
 extern "user32" fn ReleaseCapture() callconv(.winapi) bool;
 extern "user32" fn SendMessageW(hwnd: *anyopaque, msg: c_uint, wparam: usize, lparam: isize) callconv(.winapi) isize;
 extern "user32" fn GetForegroundWindow() callconv(.winapi) ?*anyopaque;
@@ -73,6 +73,7 @@ const algorithm_labels_z = [_][:0]const u8{
 const Color = rl.Color;
 const Vec2 = rl.Vector2;
 const Rect = rl.Rectangle;
+const logical_font_size: f32 = 16;
 
 const colors = struct {
     const bg = Color.init(14, 17, 19, 255);
@@ -114,6 +115,7 @@ const UiState = struct {
     font: rl.Font = undefined,
     font_loaded: bool = false,
     font_codepoints: []i32 = &.{},
+    font_render_scale: f32 = 0,
     font_text_hash: u64 = 0,
     font_revision: u64 = 0,
     drawn_codepoints: std.AutoHashMap(i32, void),
@@ -163,12 +165,11 @@ fn defaultColumnWidths() [12]f32 {
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
-    enableDpiAwareness();
-
     rl.setConfigFlags(.{
         .window_resizable = true,
         .window_undecorated = true,
         .window_highdpi = true,
+        .msaa_4x_hint = true,
         .vsync_hint = true,
     });
     rl.initWindow(1180, 760, "Hasher 1.4");
@@ -199,12 +200,6 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     }
 }
 
-fn enableDpiAwareness() void {
-    if (@import("builtin").os.tag != .windows) return;
-    const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
-    _ = SetProcessDpiAwarenessContext(@ptrFromInt(@as(usize, @bitCast(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))));
-}
-
 fn setAppIcon() void {
     const icon = rl.loadImageFromMemory(".png", embedded_assets.icon_png) catch return;
     defer rl.unloadImage(icon);
@@ -217,6 +212,8 @@ fn loadAppIconTexture(ui: *UiState) void {
     const texture = rl.loadTextureFromImage(image) catch return;
     if (!rl.isTextureValid(texture)) return;
     ui.app_icon = texture;
+    rl.genTextureMipmaps(&ui.app_icon);
+    rl.setTextureFilter(ui.app_icon, .trilinear);
     ui.app_icon_loaded = true;
 }
 
@@ -235,6 +232,11 @@ fn pixelScale(ui: *const UiState, value: f32) f32 {
     return value * ui.render_scale;
 }
 
+fn snapToPhysicalPixel(ui: *const UiState, value: f32) f32 {
+    if (ui.render_scale <= 0) return value;
+    return @round(value * ui.render_scale) / ui.render_scale;
+}
+
 fn beginScissor(ui: *const UiState, r: Rect) void {
     _ = ui;
     rl.beginScissorMode(@intFromFloat(r.x), @intFromFloat(r.y), @intFromFloat(r.width), @intFromFloat(r.height));
@@ -243,35 +245,40 @@ fn beginScissor(ui: *const UiState, r: Rect) void {
 fn loadFont(ui: *UiState) !void {
     ui.font_text_hash = computeFontTextHash(ui);
     ui.font_codepoints = try buildFontCodepoints(ui);
-    ui.font = rl.loadFontFromMemory(".ttf", embedded_assets.ttf, @intFromFloat(pixelScale(ui, 20)), ui.font_codepoints) catch {
+    ui.font = loadFontAtlas(ui, ui.font_codepoints) catch {
         ui.font = try rl.getFontDefault();
+        ui.font_render_scale = ui.render_scale;
         return;
     };
-    if (ui.font.isReady()) {
-        ui.font_loaded = true;
-        return;
-    }
-    ui.font = try rl.getFontDefault();
+    ui.font_loaded = true;
+    ui.font_render_scale = ui.render_scale;
 }
 
 fn ensureFontCurrent(ui: *UiState) !void {
     const current_hash = computeFontTextHash(ui);
-    if (current_hash == ui.font_text_hash) return;
+    const scale_changed = @abs(ui.font_render_scale - ui.render_scale) > 0.001;
+    if (current_hash == ui.font_text_hash and !scale_changed) return;
     const next_codepoints = try buildFontCodepoints(ui);
-    const next_font = rl.loadFontFromMemory(".ttf", embedded_assets.ttf, @intFromFloat(pixelScale(ui, 20)), next_codepoints) catch {
+    const next_font = loadFontAtlas(ui, next_codepoints) catch {
         ui.allocator.free(next_codepoints);
+        ui.font_render_scale = ui.render_scale;
         return;
     };
-    if (!next_font.isReady()) {
-        ui.allocator.free(next_codepoints);
-        return;
-    }
     if (ui.font_loaded) rl.unloadFont(ui.font);
     ui.allocator.free(ui.font_codepoints);
     ui.font = next_font;
     ui.font_loaded = true;
     ui.font_codepoints = next_codepoints;
     ui.font_text_hash = current_hash;
+    ui.font_render_scale = ui.render_scale;
+}
+
+fn loadFontAtlas(ui: *const UiState, codepoints: []const i32) !rl.Font {
+    const pixel_size = @max(1, @as(i32, @intFromFloat(@ceil(pixelScale(ui, logical_font_size)))));
+    const font = try font_atlas.load(embedded_assets.ttf, pixel_size, codepoints);
+    if (!font.isReady()) return error.FontLoadFailed;
+    rl.setTextureFilter(font.texture, .point);
+    return font;
 }
 
 fn computeFontTextHash(ui: *UiState) u64 {
@@ -917,9 +924,10 @@ fn drawTextClipped(ui: *UiState, text: []const u8, r: Rect, color: Color) void {
     }
     beginScissor(ui, rect(r.x, r.y - scale(ui, 2), r.width, r.height + scale(ui, 4)));
     defer rl.endScissorMode();
-    const font_size = scale(ui, 16);
+    const font_size = scale(ui, logical_font_size);
     const y = r.y + @max(0, (r.height - font_size) * 0.5) - scale(ui, 2);
-    rl.drawTextCodepoints(ui.font, cps[0..draw_n], vec(r.x, y), font_size, scale(ui, 1), color);
+    const position = vec(snapToPhysicalPixel(ui, r.x), snapToPhysicalPixel(ui, y));
+    rl.drawTextCodepoints(ui.font, cps[0..draw_n], position, font_size, scale(ui, 1), color);
 }
 
 fn measureText(ui: *UiState, text: []const u8, max_width: f32) f32 {
@@ -931,7 +939,7 @@ fn measureText(ui: *UiState, text: []const u8, max_width: f32) f32 {
 
 fn measureCodepoints(ui: *UiState, cps: []const i32) f32 {
     if (cps.len == 0) return 0;
-    return rl.measureTextCodepoints(ui.font, cps, @intCast(cps.len), scale(ui, 16), scale(ui, 1)).x;
+    return rl.measureTextCodepoints(ui.font, cps, @intCast(cps.len), scale(ui, logical_font_size), scale(ui, 1)).x;
 }
 
 fn textToCodepoints(text: []const u8, out: []i32) usize {
