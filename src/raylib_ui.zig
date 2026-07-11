@@ -110,7 +110,21 @@ const ButtonVisual = struct {
 };
 
 const Icon = enum {
-    minimize, maximize, restore, close, check, play, stop, clear, copy, copy_no_path, save, save_no_path, reset, chevron_down, settings,
+    minimize,
+    maximize,
+    restore,
+    close,
+    check,
+    play,
+    stop,
+    clear,
+    copy,
+    copy_no_path,
+    save,
+    save_no_path,
+    reset,
+    chevron_down,
+    settings,
 };
 
 const FlowLayout = struct {
@@ -220,7 +234,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_request: ?context_m
         .msaa_4x_hint = true,
         .vsync_hint = true,
     });
-    rl.initWindow(1180, 760, "Hasher 1.4");
+    rl.initWindow(1180, 760, "Hasher 1.5");
     defer rl.closeWindow();
     windows_frame.installNativeFrame(rl.getWindowHandle());
     setAppIcon();
@@ -606,7 +620,7 @@ fn drawTitleBar(ui: *UiState, w: f32) void {
             Color.init(255, 255, 255, 255),
         );
     }
-    drawTextClipped(ui, "Hasher 1.4", rect(scale(ui, 34), scale(ui, 7), scale(ui, 180), scale(ui, 22)), colors.text);
+    drawTextClipped(ui, "Hasher 1.5", rect(scale(ui, 34), scale(ui, 7), scale(ui, 180), scale(ui, 22)), colors.text);
     const button_w = scale(ui, 46);
     var x = w - button_w * 3;
     if (titleBarButton(ui, rect(x, 0, button_w, h), .minimize)) {
