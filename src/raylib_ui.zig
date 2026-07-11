@@ -1261,12 +1261,12 @@ fn saveRows(ui: *UiState, include_path: bool) !void {
 fn showSaveDialog(ui: *UiState) ![]u8 {
     if (@import("builtin").os.tag != .windows) return ui.allocator.dupe(u8, "");
     var file_buf: [std.fs.max_path_bytes]u16 = @splat(0);
-    const default_name = std.unicode.utf8ToUtf16LeStringLiteral("哈希校验结果.txt");
+    const default_name = std.unicode.utf8ToUtf16LeStringLiteral("哈希校验结果.csv");
     @memcpy(file_buf[0..default_name.len], default_name);
 
-    const filter = std.unicode.utf8ToUtf16LeStringLiteral("Text Files (*.txt)\x00*.txt\x00All Files (*.*)\x00*.*\x00");
+    const filter = std.unicode.utf8ToUtf16LeStringLiteral("CSV Files (*.csv)\x00*.csv\x00All Files (*.*)\x00*.*\x00");
     const title = std.unicode.utf8ToUtf16LeStringLiteral("保存结果");
-    const def_ext = std.unicode.utf8ToUtf16LeStringLiteral("txt");
+    const def_ext = std.unicode.utf8ToUtf16LeStringLiteral("csv");
     var ofn = OpenFileNameW{
         .lStructSize = @sizeOf(OpenFileNameW),
         .lpstrFilter = filter.ptr,
@@ -1284,32 +1284,54 @@ fn showSaveDialog(ui: *UiState) ![]u8 {
 fn formatRows(ui: *UiState, include_path: bool) !std.ArrayList(u8) {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(ui.allocator);
-    try out.appendSlice(ui.allocator, "文件\t大小");
+    try appendCsvField(&out, ui.allocator, "文件");
+    try appendCsvFieldSeparator(&out, ui.allocator, "大小");
     worker.lockMutex(&ui.app.mutex);
     defer ui.app.mutex.unlock();
     for (hash.all_algorithms) |algorithm| {
-        if (ui.app.options.enabled(algorithm)) try out.print(ui.allocator, "\t{s}", .{algorithm.label()});
+        if (ui.app.options.enabled(algorithm)) try appendCsvFieldSeparator(&out, ui.allocator, algorithm.label());
     }
-    if (include_path) try out.appendSlice(ui.allocator, "\t完整路径");
-    try out.append(ui.allocator, '\n');
+    if (include_path) try appendCsvFieldSeparator(&out, ui.allocator, "完整路径");
+    try out.appendSlice(ui.allocator, "\r\n");
 
     for (ui.app.rows.items) |row| {
         if (!rowMatches(ui, row)) continue;
-        try out.print(ui.allocator, "{s}\t{s}", .{ row.file.name, row.file.size_label });
+        try appendCsvField(&out, ui.allocator, row.file.name);
+        try appendCsvFieldSeparator(&out, ui.allocator, row.file.size_label);
         for (hash.all_algorithms) |algorithm| {
             if (!ui.app.options.enabled(algorithm)) continue;
             const value = row.result.get(algorithm);
             if (ui.app.uppercase) {
                 var buf: [128]u8 = undefined;
-                try out.print(ui.allocator, "\t{s}", .{uppercaseInto(&buf, value)});
+                try appendCsvFieldSeparator(&out, ui.allocator, uppercaseInto(&buf, value));
             } else {
-                try out.print(ui.allocator, "\t{s}", .{value});
+                try appendCsvFieldSeparator(&out, ui.allocator, value);
             }
         }
-        if (include_path) try out.print(ui.allocator, "\t{s}", .{row.file.path});
-        try out.append(ui.allocator, '\n');
+        if (include_path) try appendCsvFieldSeparator(&out, ui.allocator, row.file.path);
+        try out.appendSlice(ui.allocator, "\r\n");
     }
     return out;
+}
+
+fn appendCsvFieldSeparator(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
+    try out.append(allocator, ',');
+    try appendCsvField(out, allocator, value);
+}
+
+fn appendCsvField(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
+    const needs_quotes = std.mem.indexOfAny(u8, value, ",\"\r\n") != null;
+    if (!needs_quotes) {
+        try out.appendSlice(allocator, value);
+        return;
+    }
+
+    try out.append(allocator, '"');
+    for (value) |character| {
+        if (character == '"') try out.append(allocator, '"');
+        try out.append(allocator, character);
+    }
+    try out.append(allocator, '"');
 }
 
 fn uppercaseInto(buf: []u8, value: []const u8) []const u8 {
