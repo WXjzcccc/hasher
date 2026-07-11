@@ -3,6 +3,19 @@ const builtin = @import("builtin");
 const WndProc = *const fn (?*anyopaque, u32, usize, isize) callconv(.winapi) isize;
 const Point = extern struct { x: i32, y: i32 };
 const WinRect = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
+const WindowPos = extern struct {
+    hwnd: ?*anyopaque,
+    insert_after: ?*anyopaque,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    flags: u32,
+};
+const NcCalcSizeParams = extern struct {
+    rects: [3]WinRect,
+    window_pos: *WindowPos,
+};
 
 extern "dwmapi" fn DwmSetWindowAttribute(hwnd: ?*anyopaque, attribute: u32, value: ?*const anyopaque, value_size: u32) callconv(.winapi) i32;
 extern "gdi32" fn CreateRoundRectRgn(left: i32, top: i32, right: i32, bottom: i32, width: i32, height: i32) callconv(.winapi) ?*anyopaque;
@@ -14,9 +27,13 @@ extern "user32" fn SetWindowPos(hwnd: ?*anyopaque, insert_after: ?*anyopaque, x:
 extern "user32" fn GetCursorPos(point: *Point) callconv(.winapi) bool;
 extern "user32" fn ScreenToClient(hwnd: ?*anyopaque, point: *Point) callconv(.winapi) bool;
 extern "user32" fn GetClientRect(hwnd: ?*anyopaque, rect: *WinRect) callconv(.winapi) bool;
+extern "user32" fn GetWindowRect(hwnd: ?*anyopaque, rect: *WinRect) callconv(.winapi) bool;
 extern "user32" fn GetDpiForWindow(hwnd: ?*anyopaque) callconv(.winapi) u32;
+extern "user32" fn GetSystemMetricsForDpi(index: c_int, dpi: u32) callconv(.winapi) c_int;
 extern "user32" fn IsZoomed(hwnd: ?*anyopaque) callconv(.winapi) bool;
 extern "user32" fn SendMessageW(hwnd: ?*anyopaque, message: c_uint, wparam: usize, lparam: isize) callconv(.winapi) isize;
+extern "user32" fn SetCapture(hwnd: ?*anyopaque) callconv(.winapi) ?*anyopaque;
+extern "user32" fn ReleaseCapture() callconv(.winapi) bool;
 
 const gwl_style: c_int = -16;
 const gwlp_wndproc: c_int = -4;
@@ -34,22 +51,23 @@ const wm_nccalcsize: u32 = 0x0083;
 const wm_nchittest: u32 = 0x0084;
 const wm_syscommand: c_uint = 0x0112;
 const wm_close: c_uint = 0x0010;
+const sm_cxframe: c_int = 32;
+const sm_cyframe: c_int = 33;
+const sm_cxpaddedborder: c_int = 92;
 const sc_minimize: usize = 0xF020;
 const sc_maximize: usize = 0xF030;
 const sc_restore: usize = 0xF120;
 const ht_client: isize = 1;
 const ht_caption: isize = 2;
-const ht_left: isize = 10;
-const ht_right: isize = 11;
-const ht_top: isize = 12;
-const ht_top_left: isize = 13;
-const ht_top_right: isize = 14;
-const ht_bottom: isize = 15;
-const ht_bottom_left: isize = 16;
-const ht_bottom_right: isize = 17;
 
 var installed_hwnd: ?*anyopaque = null;
 var previous_wnd_proc: ?WndProc = null;
+
+pub const ResizeSession = struct {
+    hit_test: c_int,
+    start_cursor: Point,
+    start_rect: WinRect,
+};
 
 /// Adds the standard caption/minimize/maximize styles needed by DWM animations,
 /// while a native hit-test procedure keeps the app's custom-drawn titlebar.
@@ -95,13 +113,68 @@ pub fn close(hwnd: ?*anyopaque) void {
     if (builtin.os.tag == .windows) _ = SendMessageW(hwnd, wm_close, 0, 0);
 }
 
+pub fn beginResize(hwnd: ?*anyopaque, hit_test: c_int) ?ResizeSession {
+    if (builtin.os.tag != .windows) return null;
+    var cursor = Point{ .x = 0, .y = 0 };
+    var window_rect = WinRect{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+    if (!GetCursorPos(&cursor) or !GetWindowRect(hwnd, &window_rect)) return null;
+    _ = SetCapture(hwnd);
+    return .{ .hit_test = hit_test, .start_cursor = cursor, .start_rect = window_rect };
+}
+
+pub fn updateResize(hwnd: ?*anyopaque, session: ResizeSession, min_width: i32, min_height: i32) void {
+    if (builtin.os.tag != .windows) return;
+    var cursor = Point{ .x = 0, .y = 0 };
+    if (!GetCursorPos(&cursor)) return;
+    const dx = cursor.x - session.start_cursor.x;
+    const dy = cursor.y - session.start_cursor.y;
+    var next = session.start_rect;
+    switch (session.hit_test) {
+        10, 13, 16 => next.left += dx,
+        11, 14, 17 => next.right += dx,
+        else => {},
+    }
+    switch (session.hit_test) {
+        12, 13, 14 => next.top += dy,
+        15, 16, 17 => next.bottom += dy,
+        else => {},
+    }
+    if (next.right - next.left < min_width) {
+        if (session.hit_test == 10 or session.hit_test == 13 or session.hit_test == 16) next.left = next.right - min_width else next.right = next.left + min_width;
+    }
+    if (next.bottom - next.top < min_height) {
+        if (session.hit_test == 12 or session.hit_test == 13 or session.hit_test == 14) next.top = next.bottom - min_height else next.bottom = next.top + min_height;
+    }
+    _ = SetWindowPos(hwnd, null, next.left, next.top, next.right - next.left, next.bottom - next.top, swp_nozorder | swp_noactivate);
+}
+
+pub fn endResize() void {
+    if (builtin.os.tag == .windows) _ = ReleaseCapture();
+}
+
 fn windowProc(hwnd: ?*anyopaque, message: u32, wparam: usize, lparam: isize) callconv(.winapi) isize {
     switch (message) {
-        wm_nccalcsize => if (wparam != 0) return 0,
+        wm_nccalcsize => if (wparam != 0) {
+            if (IsZoomed(hwnd)) adjustMaximizedClientRect(hwnd, lparam);
+            return 0;
+        },
         wm_nchittest => return hitTest(hwnd),
         else => {},
     }
     return CallWindowProcW(previous_wnd_proc, hwnd, message, wparam, lparam);
+}
+
+fn adjustMaximizedClientRect(hwnd: ?*anyopaque, lparam: isize) void {
+    if (lparam == 0) return;
+    const params: *NcCalcSizeParams = @ptrFromInt(@as(usize, @bitCast(lparam)));
+    const dpi = @max(@as(u32, 96), GetDpiForWindow(hwnd));
+    const padded_border = GetSystemMetricsForDpi(sm_cxpaddedborder, dpi);
+    const border_x = GetSystemMetricsForDpi(sm_cxframe, dpi) + padded_border;
+    const border_y = GetSystemMetricsForDpi(sm_cyframe, dpi) + padded_border;
+    params.rects[0].left += border_x;
+    params.rects[0].top += border_y;
+    params.rects[0].right -= border_x;
+    params.rects[0].bottom -= border_y;
 }
 
 fn hitTest(hwnd: ?*anyopaque) isize {
@@ -110,23 +183,8 @@ fn hitTest(hwnd: ?*anyopaque) isize {
     if (!GetCursorPos(&point) or !ScreenToClient(hwnd, &point) or !GetClientRect(hwnd, &client)) return ht_client;
 
     const dpi = @max(@as(u32, 96), GetDpiForWindow(hwnd));
-    const edge: i32 = @intCast((7 * dpi + 95) / 96);
     const title_height: i32 = @intCast((34 * dpi + 95) / 96);
-    const button_band: i32 = @intCast((132 * dpi + 95) / 96);
-    if (!IsZoomed(hwnd)) {
-        const left = point.x >= client.left and point.x < client.left + edge;
-        const right = point.x < client.right and point.x >= client.right - edge;
-        const top = point.y >= client.top and point.y < client.top + edge;
-        const bottom = point.y < client.bottom and point.y >= client.bottom - edge;
-        if (top and left) return ht_top_left;
-        if (top and right) return ht_top_right;
-        if (bottom and left) return ht_bottom_left;
-        if (bottom and right) return ht_bottom_right;
-        if (left) return ht_left;
-        if (right) return ht_right;
-        if (top) return ht_top;
-        if (bottom) return ht_bottom;
-    }
+    const button_band: i32 = @intCast((138 * dpi + 95) / 96);
     if (point.y >= 0 and point.y < title_height and point.x >= 0 and point.x < client.right - button_band) return ht_caption;
     return ht_client;
 }
