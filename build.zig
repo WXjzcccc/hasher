@@ -61,9 +61,11 @@ fn configureRaylib(
     if (target.result.os.tag == .windows) {
         exe.root_module.linkSystemLibrary("user32", .{});
         exe.root_module.linkSystemLibrary("gdi32", .{});
+        exe.root_module.linkSystemLibrary("dwmapi", .{});
         exe.root_module.linkSystemLibrary("opengl32", .{});
         exe.root_module.linkSystemLibrary("winmm", .{});
         exe.root_module.linkSystemLibrary("comdlg32", .{});
+        exe.root_module.linkSystemLibrary("shell32", .{});
         exe.root_module.addWin32ResourceFile(.{ .file = b.path("assets/hasher.rc") });
     }
 }

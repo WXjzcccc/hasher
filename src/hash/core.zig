@@ -38,6 +38,22 @@ pub const HashOptions = packed struct {
     crc64_iso: bool = false,
     crc64_ecma: bool = false,
 
+    pub fn none() HashOptions {
+        return .{ .sha256 = false };
+    }
+
+    pub fn only(algorithm: Algorithm) HashOptions {
+        var options = none();
+        options.set(algorithm, true);
+        return options;
+    }
+
+    pub fn all() HashOptions {
+        var options = none();
+        inline for (all_algorithms) |algorithm| options.set(algorithm, true);
+        return options;
+    }
+
     pub fn enabled(self: HashOptions, algorithm: Algorithm) bool {
         return switch (algorithm) {
             .md5 => self.md5,
@@ -185,6 +201,14 @@ test "buffer sizing mirrors original thresholds" {
     try std.testing.expectEqual(@as(usize, 512 * 1024), determineBufferSize(10));
     try std.testing.expectEqual(@as(usize, 1024 * 1024), determineBufferSize(11 * 1024 * 1024));
     try std.testing.expectEqual(@as(usize, 2 * 1024 * 1024), determineBufferSize(101 * 1024 * 1024));
+}
+
+test "hash option constructors select exactly the requested algorithms" {
+    const md5_only = HashOptions.only(.md5);
+    try std.testing.expect(md5_only.md5);
+    try std.testing.expect(!md5_only.sha256);
+    const every = HashOptions.all();
+    inline for (all_algorithms) |algorithm| try std.testing.expect(every.enabled(algorithm));
 }
 
 test "crc64 ecma matches Go crc64.ECMA" {

@@ -5,10 +5,9 @@ const hash = @import("hash/core.zig");
 const worker = @import("worker.zig");
 const font_atlas = @import("font_atlas.zig");
 const embedded_assets = @import("embedded_assets");
+const context_menu = @import("context_menu.zig");
+const windows_frame = @import("windows_frame.zig");
 
-extern "user32" fn ReleaseCapture() callconv(.winapi) bool;
-extern "user32" fn SendMessageW(hwnd: *anyopaque, msg: c_uint, wparam: usize, lparam: isize) callconv(.winapi) isize;
-extern "user32" fn GetForegroundWindow() callconv(.winapi) ?*anyopaque;
 extern "comdlg32" fn GetSaveFileNameW(ofn: *OpenFileNameW) callconv(.winapi) bool;
 
 const OpenFileNameW = extern struct {
@@ -85,10 +84,28 @@ const colors = struct {
     const button = Color.init(32, 57, 86, 255);
     const button_hover = Color.init(45, 77, 115, 255);
     const button_down = Color.init(56, 95, 139, 255);
+    const button_disabled = Color.init(25, 31, 37, 255);
     const accent = Color.init(74, 153, 225, 255);
+    const accent_hover = Color.init(91, 170, 239, 255);
     const danger = Color.init(180, 48, 57, 255);
+    const close_hover = Color.init(232, 17, 35, 255);
+    const close_down = Color.init(196, 13, 29, 255);
+    const hash_value = Color.init(104, 211, 227, 255);
+    const success = Color.init(93, 201, 128, 255);
+    const warning = Color.init(235, 184, 82, 255);
+    const path = Color.init(174, 183, 196, 255);
     const row_alt = Color.init(18, 22, 26, 255);
+    const row_hover = Color.init(27, 36, 45, 255);
+    const selected = Color.init(45, 91, 130, 255);
     const input = Color.init(20, 25, 31, 255);
+    const scrollbar_track = Color.init(18, 23, 28, 255);
+    const scrollbar_thumb = Color.init(82, 94, 108, 255);
+};
+
+const ButtonVisual = struct {
+    clicked: bool,
+    hovered: bool,
+    pressed: bool,
 };
 
 const Icon = enum {
@@ -106,6 +123,35 @@ const Icon = enum {
     save_no_path,
     reset,
     chevron_down,
+    settings,
+};
+
+const FlowLayout = struct {
+    x: f32,
+    y: f32,
+    start_x: f32,
+    max_x: f32,
+    item_height: f32,
+    gap: f32,
+    row_gap: f32,
+
+    fn init(start_x: f32, start_y: f32, max_x: f32, item_height: f32, gap: f32, row_gap: f32) FlowLayout {
+        return .{ .x = start_x, .y = start_y, .start_x = start_x, .max_x = max_x, .item_height = item_height, .gap = gap, .row_gap = row_gap };
+    }
+
+    fn next(self: *FlowLayout, width: f32) Rect {
+        if (self.x > self.start_x and self.x + width > self.max_x) {
+            self.x = self.start_x;
+            self.y += self.item_height + self.row_gap;
+        }
+        const result = rect(self.x, self.y, @min(width, self.max_x - self.start_x), self.item_height);
+        self.x += result.width + self.gap;
+        return result;
+    }
+
+    fn bottom(self: *const FlowLayout) f32 {
+        return self.y + self.item_height;
+    }
 };
 
 const UiState = struct {
@@ -141,6 +187,12 @@ const UiState = struct {
     resizing_column: ?usize = null,
     selected_row: ?usize = null,
     selected_column: ?usize = null,
+    rounded_frame_width: i32 = 0,
+    rounded_frame_height: i32 = 0,
+    rounded_frame_maximized: bool = false,
+    context_menu_enabled: bool = false,
+    current_cursor: rl.MouseCursor = .default,
+    requested_cursor: rl.MouseCursor = .default,
 
     fn init(allocator: std.mem.Allocator, io: std.Io) !UiState {
         return .{
@@ -164,7 +216,7 @@ fn defaultColumnWidths() [12]f32 {
     return .{ 180, 126, 170, 170, 170, 170, 170, 170, 170, 170, 92, 380 };
 }
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, context_request: ?context_menu.ContextHashRequest) !void {
     rl.setConfigFlags(.{
         .window_resizable = true,
         .window_undecorated = true,
@@ -174,19 +226,26 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     });
     rl.initWindow(1180, 760, "Hasher 1.4");
     defer rl.closeWindow();
+    windows_frame.installNativeFrame(rl.getWindowHandle());
     setAppIcon();
     rl.setExitKey(.null);
     rl.setTargetFPS(60);
 
     var ui = try UiState.init(allocator, io);
     defer ui.deinit();
+    ui.context_menu_enabled = context_menu.isInstalled(allocator);
+    if (ui.context_menu_enabled) context_menu.install(allocator) catch {};
     updateScale(&ui);
+    updateWindowFrame(&ui);
     loadAppIconTexture(&ui);
     try loadFont(&ui);
     rl.setWindowMinSize(820, 520);
+    if (context_request) |request| startContextHash(&ui, request);
 
     while (!rl.windowShouldClose()) {
+        beginCursorFrame(&ui);
         updateScale(&ui);
+        updateWindowFrame(&ui);
         handleDrops(&ui);
         handleSearchInput(&ui);
         handleWindowResize(&ui);
@@ -197,7 +256,41 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
         defer rl.endDrawing();
         rl.clearBackground(colors.bg);
         drawFrame(&ui);
+        finishCursorFrame(&ui);
     }
+}
+
+fn beginCursorFrame(ui: *UiState) void {
+    ui.requested_cursor = .default;
+}
+
+fn requestCursor(ui: *UiState, cursor: rl.MouseCursor) void {
+    ui.requested_cursor = cursor;
+}
+
+fn finishCursorFrame(ui: *UiState) void {
+    if (ui.current_cursor == ui.requested_cursor) return;
+    rl.setMouseCursor(ui.requested_cursor);
+    ui.current_cursor = ui.requested_cursor;
+}
+
+fn updateWindowFrame(ui: *UiState) void {
+    const width = rl.getRenderWidth();
+    const height = rl.getRenderHeight();
+    const maximized = rl.isWindowMaximized();
+    if (width == ui.rounded_frame_width and height == ui.rounded_frame_height and maximized == ui.rounded_frame_maximized) return;
+    windows_frame.updateRoundedFrame(rl.getWindowHandle(), width, height, maximized);
+    ui.rounded_frame_width = width;
+    ui.rounded_frame_height = height;
+    ui.rounded_frame_maximized = maximized;
+}
+
+fn startContextHash(ui: *UiState, request: context_menu.ContextHashRequest) void {
+    worker.lockMutex(&ui.app.mutex);
+    ui.app.options = request.options;
+    ui.app.mutex.unlock();
+    ui.app.addDroppedPaths(&.{request.path});
+    ui.app.start() catch {};
 }
 
 fn setAppIcon() void {
@@ -402,15 +495,13 @@ fn encodeUtf8(cp: u21, out: []u8) !usize {
 }
 
 fn handleWindowDrag(ui: *UiState) void {
+    if (@import("builtin").os.tag == .windows) return;
     const mouse = rl.getMousePosition();
     const screen_w: f32 = @floatFromInt(rl.getScreenWidth());
     const in_title = mouse.y >= 0 and mouse.y <= scale(ui, 34) and mouse.x < screen_w - scale(ui, 132);
     if (resizeHitTest(ui, mouse) != null) return;
     if (@import("builtin").os.tag == .windows and in_title and rl.isMouseButtonPressed(.left)) {
-        if (GetForegroundWindow()) |hwnd| {
-            _ = ReleaseCapture();
-            _ = SendMessageW(hwnd, 0x00A1, 2, 0);
-        }
+        windows_frame.beginWindowDrag(rl.getWindowHandle());
         ui.dragging_title = false;
         return;
     }
@@ -433,15 +524,11 @@ fn handleWindowResize(ui: *UiState) void {
     const mouse = rl.getMousePosition();
     const hit = resizeHitTest(ui, mouse);
     if (hit) |ht| {
-        setResizeCursor(ht);
+        setResizeCursor(ui, ht);
+        if (@import("builtin").os.tag == .windows) return;
         if (@import("builtin").os.tag == .windows and rl.isMouseButtonPressed(.left)) {
-            if (GetForegroundWindow()) |hwnd| {
-                _ = ReleaseCapture();
-                _ = SendMessageW(hwnd, 0x00A1, @intCast(ht), 0);
-            }
+            windows_frame.beginWindowResize(rl.getWindowHandle(), ht);
         }
-    } else {
-        rl.setMouseCursor(.default);
     }
 }
 
@@ -466,13 +553,13 @@ fn resizeHitTest(ui: *UiState, mouse: Vec2) ?c_int {
     return null;
 }
 
-fn setResizeCursor(hit: c_int) void {
+fn setResizeCursor(ui: *UiState, hit: c_int) void {
     switch (hit) {
-        10, 11 => rl.setMouseCursor(.resize_ew),
-        12, 15 => rl.setMouseCursor(.resize_ns),
-        13, 17 => rl.setMouseCursor(.resize_nwse),
-        14, 16 => rl.setMouseCursor(.resize_nesw),
-        else => rl.setMouseCursor(.default),
+        10, 11 => requestCursor(ui, .resize_ew),
+        12, 15 => requestCursor(ui, .resize_ns),
+        13, 17 => requestCursor(ui, .resize_nwse),
+        14, 16 => requestCursor(ui, .resize_nesw),
+        else => {},
     }
 }
 
@@ -481,8 +568,8 @@ fn drawFrame(ui: *UiState) void {
     const h: f32 = @floatFromInt(rl.getScreenHeight());
     rl.drawRectangleRec(rect(0, 0, w, h), colors.bg);
     drawTitleBar(ui, w);
-    drawToolbar(ui, w);
-    const options_bottom = drawOptions(ui, w);
+    const toolbar_bottom = drawToolbar(ui, w);
+    const options_bottom = drawOptions(ui, w, toolbar_bottom + scale(ui, 8));
     const status_bottom = drawStatus(ui, w, options_bottom + scale(ui, 8));
     drawTable(ui, w, h, status_bottom + scale(ui, 8));
     if (ui.filter_open) drawFilterPopup(ui);
@@ -506,96 +593,97 @@ fn drawTitleBar(ui: *UiState, w: f32) void {
     }
     drawTextClipped(ui, "Hasher 1.4", rect(scale(ui, 34), scale(ui, 7), scale(ui, 180), scale(ui, 22)), colors.text);
     var x = w - scale(ui, 112);
-    if (iconButton(ui, rect(x, scale(ui, 4), scale(ui, 32), scale(ui, 26)), .minimize, colors.button)) rl.minimizeWindow();
-    x += scale(ui, 36);
-    if (iconButton(ui, rect(x, scale(ui, 4), scale(ui, 32), scale(ui, 26)), if (rl.isWindowMaximized()) .restore else .maximize, colors.button)) {
-        if (rl.isWindowMaximized()) rl.restoreWindow() else rl.maximizeWindow();
+    if (iconButton(ui, rect(x, scale(ui, 4), scale(ui, 32), scale(ui, 26)), .minimize, colors.button)) {
+        if (@import("builtin").os.tag == .windows) windows_frame.minimize(rl.getWindowHandle()) else rl.minimizeWindow();
     }
     x += scale(ui, 36);
-    if (iconButton(ui, rect(x, scale(ui, 4), scale(ui, 32), scale(ui, 26)), .close, colors.danger)) rl.closeWindow();
+    if (iconButton(ui, rect(x, scale(ui, 4), scale(ui, 32), scale(ui, 26)), if (rl.isWindowMaximized()) .restore else .maximize, colors.button)) {
+        if (@import("builtin").os.tag == .windows) {
+            windows_frame.toggleMaximize(rl.getWindowHandle(), rl.isWindowMaximized());
+        } else if (rl.isWindowMaximized()) {
+            rl.restoreWindow();
+        } else {
+            rl.maximizeWindow();
+        }
+    }
+    x += scale(ui, 36);
+    if (iconButton(ui, rect(x, scale(ui, 4), scale(ui, 32), scale(ui, 26)), .close, colors.danger)) {
+        if (@import("builtin").os.tag == .windows) windows_frame.close(rl.getWindowHandle()) else rl.closeWindow();
+    }
     rl.drawLine(0, @intFromFloat(h - 1), @intFromFloat(w), @intFromFloat(h - 1), colors.border);
 }
 
-fn drawToolbar(ui: *UiState, w: f32) void {
-    _ = w;
-    const y = scale(ui, 42);
-    var x = scale(ui, 6);
-    if (toolButton(ui, rect(x, y, scale(ui, 72), scale(ui, 30)), .play, "开始")) ui.app.start() catch {};
-    x += scale(ui, 78);
-    if (toolButton(ui, rect(x, y, scale(ui, 72), scale(ui, 30)), .stop, "停止")) ui.app.stop();
-    x += scale(ui, 78);
-    if (toolButton(ui, rect(x, y, scale(ui, 72), scale(ui, 30)), .clear, "清空")) ui.app.clear();
-    x += scale(ui, 78);
-    if (toolButton(ui, rect(x, y, scale(ui, 74), scale(ui, 30)), .copy, "复制")) copyRows(ui, true) catch {};
-    x += scale(ui, 80);
-    if (toolButton(ui, rect(x, y, scale(ui, 74), scale(ui, 30)), .save, "保存")) saveRows(ui, true) catch {};
-    x += scale(ui, 80);
-    if (toolButton(ui, rect(x, y, scale(ui, 124), scale(ui, 30)), .copy_no_path, "复制无路径")) copyRows(ui, false) catch {};
-    x += scale(ui, 132);
-    if (toolButton(ui, rect(x, y, scale(ui, 124), scale(ui, 30)), .save_no_path, "保存无路径")) saveRows(ui, false) catch {};
-    x += scale(ui, 132);
-    const filter_rect = rect(x, y, scale(ui, 128), scale(ui, 30));
+fn drawToolbar(ui: *UiState, w: f32) f32 {
+    worker.lockMutex(&ui.app.mutex);
+    const processing = ui.app.processing;
+    ui.app.mutex.unlock();
+
+    var flow = FlowLayout.init(scale(ui, 6), scale(ui, 42), w - scale(ui, 6), scale(ui, 30), scale(ui, 6), scale(ui, 6));
+    if (toolButtonState(ui, flow.next(scale(ui, 72)), .play, "开始", !processing, false)) ui.app.start() catch {};
+    if (toolButtonState(ui, flow.next(scale(ui, 72)), .stop, "停止", processing, processing)) ui.app.stop();
+    if (toolButton(ui, flow.next(scale(ui, 72)), .clear, "清空")) ui.app.clear();
+    if (toolButton(ui, flow.next(scale(ui, 74)), .copy, "复制")) copyRows(ui, true) catch {};
+    if (toolButton(ui, flow.next(scale(ui, 74)), .save, "保存")) saveRows(ui, true) catch {};
+    if (toolButton(ui, flow.next(scale(ui, 124)), .copy_no_path, "复制无路径")) copyRows(ui, false) catch {};
+    if (toolButton(ui, flow.next(scale(ui, 124)), .save_no_path, "保存无路径")) saveRows(ui, false) catch {};
+    const filter_rect = flow.next(scale(ui, 128));
     ui.filter_button_rect = filter_rect;
     if (filterButton(ui, filter_rect)) ui.filter_open = !ui.filter_open;
-    x += scale(ui, 136);
-    drawSearch(ui, rect(x, y, scale(ui, 270), scale(ui, 30)));
-    x += scale(ui, 278);
-    if (toolButton(ui, rect(x, y, scale(ui, 72), scale(ui, 30)), .reset, "重置")) {
+    drawSearch(ui, flow.next(scale(ui, 270)));
+    if (toolButton(ui, flow.next(scale(ui, 72)), .reset, "重置")) {
         @memset(&ui.search_buf, 0);
         ui.search_len = 0;
     }
+    return flow.bottom();
 }
 
-fn drawOptions(ui: *UiState, screen_w: f32) f32 {
+fn drawOptions(ui: *UiState, screen_w: f32, start_y: f32) f32 {
     worker.lockMutex(&ui.app.mutex);
-    defer ui.app.mutex.unlock();
-    var x = scale(ui, 6);
-    var y = scale(ui, 80);
     const row_h = scale(ui, 24);
-    const gap = scale(ui, 8);
+    var flow = FlowLayout.init(scale(ui, 6), start_y, screen_w - scale(ui, 6), row_h, scale(ui, 8), scale(ui, 4));
     for (hash.all_algorithms) |algorithm| {
         const wide: f32 = if (algorithm == .crc64_iso or algorithm == .crc64_ecma) 126 else 86;
         const sw = scale(ui, wide);
-        if (x + sw > screen_w - scale(ui, 88)) {
-            x = scale(ui, 6);
-            y += row_h + scale(ui, 4);
-        }
         var enabled = ui.app.options.enabled(algorithm);
-        if (checkbox(ui, rect(x, y, sw, row_h), algorithmLabelZ(algorithm), &enabled)) {
+        if (checkbox(ui, flow.next(sw), algorithmLabelZ(algorithm), &enabled)) {
             ui.app.options.set(algorithm, enabled);
         }
-        x += sw + gap;
     }
-    if (x + scale(ui, 78) > screen_w - scale(ui, 6)) {
-        x = scale(ui, 6);
-        y += row_h + scale(ui, 4);
-    }
-    _ = checkbox(ui, rect(x, y, scale(ui, 78), row_h), "大写", &ui.app.uppercase);
-    return y + row_h;
+    _ = checkbox(ui, flow.next(scale(ui, 78)), "大写", &ui.app.uppercase);
+    const menu_button_w = scale(ui, 142);
+    const configure_context_menu = toolButton(ui, flow.next(menu_button_w), .settings, if (ui.context_menu_enabled) "关闭右键菜单" else "开启右键菜单");
+    ui.app.mutex.unlock();
+    if (configure_context_menu) configureContextMenu(ui);
+    return flow.bottom();
 }
 
 fn drawStatus(ui: *UiState, w: f32, y: f32) f32 {
+    var buf: [160]u8 = undefined;
     worker.lockMutex(&ui.app.mutex);
     const done = ui.app.progress_done;
     const total = ui.app.progress_total;
     const processing = ui.app.processing;
-    const status = ui.app.status_message;
+    const text = std.fmt.bufPrint(&buf, "{s} {d}/{d}{s}", .{ ui.app.status_message, done, total, if (processing) " ..." else "" }) catch "状态不可用";
     ui.app.mutex.unlock();
 
     const pct: f32 = if (total == 0) 0 else @as(f32, @floatFromInt(done)) / @as(f32, @floatFromInt(total));
-    rl.drawRectangleRec(rect(scale(ui, 6), y, w - scale(ui, 12), scale(ui, 18)), colors.panel2);
-    rl.drawRectangleRec(rect(scale(ui, 6), y, (w - scale(ui, 12)) * pct, scale(ui, 18)), colors.accent.alpha(0.55));
-    var buf: [160]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, "{s} {d}/{d}{s}", .{ status, done, total, if (processing) " ..." else "" }) catch status;
-    drawTextClipped(ui, text, rect(scale(ui, 8), y + scale(ui, 24), w - scale(ui, 16), scale(ui, 22)), colors.text);
-    return y + scale(ui, 46);
+    const status_w = @min(measureText(ui, text, w) + scale(ui, 4), @max(scale(ui, 100), w - scale(ui, 180)));
+    drawTextClipped(ui, text, rect(scale(ui, 6), y + scale(ui, 2), status_w, scale(ui, 20)), colors.text);
+    const progress_x = scale(ui, 6) + status_w + scale(ui, 10);
+    const progress = rect(progress_x, y + scale(ui, 2), @max(scale(ui, 150), w - progress_x - scale(ui, 6)), scale(ui, 20));
+    rl.drawRectangleRounded(progress, 0.22, 6, colors.panel2);
+    rl.drawRectangleRounded(rect(progress.x, progress.y, progress.width * pct, progress.height), 0.22, 6, colors.accent.alpha(0.55));
+    rl.drawRectangleRoundedLinesEx(progress, 0.22, 6, 1, colors.border);
+    return y + scale(ui, 24);
 }
 
 fn drawTable(ui: *UiState, w: f32, h: f32, top: f32) void {
-    const bottom = h - scale(ui, 14);
+    const margin = scale(ui, 6);
+    const scrollbar_size = scale(ui, 12);
+    const bottom = h - margin;
     const row_h = scale(ui, 28);
     const header_h = scale(ui, 28);
-    const vscroll_w = scale(ui, 10);
+    const vscroll_w = scrollbar_size;
     const table_w = w - scale(ui, 12);
     const table_x = scale(ui, 6);
     const table_h = bottom - top;
@@ -607,7 +695,9 @@ fn drawTable(ui: *UiState, w: f32, h: f32, top: f32) void {
     ui.table_scroll_x = std.math.clamp(ui.table_scroll_x, 0, max_scroll_x);
 
     var visible_index: usize = 0;
-    const body = rect(table_x, top + header_h, table_w, table_h - header_h - scale(ui, 14));
+    rl.drawRectangleRounded(rect(table_x, top, table_w, table_h), 0.018, 8, colors.panel);
+    rl.drawRectangleRoundedLinesEx(rect(table_x, top, table_w, table_h), 0.018, 8, 1, colors.border);
+    const body = rect(table_x, top + header_h, table_w, table_h - header_h - scrollbar_size);
     handleTableScroll(ui, body, row_h, content_w);
     {
         beginScissor(ui, body);
@@ -623,7 +713,7 @@ fn drawTable(ui: *UiState, w: f32, h: f32, top: f32) void {
     ui.table_scroll_y = std.math.clamp(ui.table_scroll_y, 0, max_scroll_y);
 
     drawTableHeader(ui, table_x, top, table_w, header_h, ui.app.options);
-    drawHorizontalScroll(ui, rect(table_x, h - scale(ui, 14), table_w, scale(ui, 10)), content_w);
+    drawHorizontalScroll(ui, rect(table_x, bottom - scrollbar_size, table_w, scrollbar_size), content_w);
     drawVerticalScroll(ui, rect(table_x + table_w - vscroll_w, body.y, vscroll_w, body.height), @as(f32, @floatFromInt(visible_index)) * row_h);
 }
 
@@ -642,8 +732,8 @@ fn handleTableScroll(ui: *UiState, area: Rect, row_h: f32, content_w: f32) void 
 }
 
 fn drawTableHeader(ui: *UiState, x: f32, y: f32, width: f32, h: f32, options: hash.HashOptions) void {
-    rl.drawRectangleRec(rect(x, y, width, h), colors.panel2);
-    rl.drawRectangleLinesEx(rect(x, y, width, h), 1, colors.border);
+    rl.drawRectangleRounded(rect(x, y, width, h), 0.10, 6, colors.panel2);
+    rl.drawLine(@intFromFloat(x), @intFromFloat(y + h - 1), @intFromFloat(x + width), @intFromFloat(y + h - 1), colors.border);
     var col_x = x - ui.table_scroll_x;
     pushHeader(ui, &col_x, y, h, 0, "文件");
     pushHeader(ui, &col_x, y, h, 1, "大小");
@@ -662,7 +752,7 @@ fn pushHeaderWidth(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, text: [
     const right = x.* + sw;
     const mouse = rl.getMousePosition();
     const grip = rect(right - scale(ui, 4), y, scale(ui, 8), h);
-    if (rl.checkCollisionPointRec(mouse, grip)) rl.setMouseCursor(.resize_ew);
+    if (rl.checkCollisionPointRec(mouse, grip)) requestCursor(ui, .resize_ew);
     if (rl.checkCollisionPointRec(mouse, grip) and rl.isMouseButtonPressed(.left)) ui.resizing_column = column;
     if (ui.resizing_column == column and rl.isMouseButtonDown(.left)) {
         const logical_right = mouse.x + ui.table_scroll_x;
@@ -676,26 +766,36 @@ fn pushHeaderWidth(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, text: [
 }
 
 fn drawRow(ui: *UiState, row: worker.Row, x: f32, y: f32, h: f32, index: usize, options: hash.HashOptions) void {
-    const bg = if (index % 2 == 0) colors.bg else colors.row_alt;
-    rl.drawRectangleRec(rect(scale(ui, 6), y, @as(f32, @floatFromInt(rl.getScreenWidth())) - scale(ui, 12), h), bg);
+    const row_rect = rect(scale(ui, 6), y, @as(f32, @floatFromInt(rl.getScreenWidth())) - scale(ui, 12), h);
+    const hovered = rl.checkCollisionPointRec(rl.getMousePosition(), row_rect);
+    const bg = if (hovered) colors.row_hover else if (index % 2 == 0) colors.bg else colors.row_alt;
+    rl.drawRectangleRec(row_rect, bg);
+    if (hovered) rl.drawLine(@intFromFloat(row_rect.x), @intFromFloat(y + h - 1), @intFromFloat(row_rect.x + row_rect.width), @intFromFloat(y + h - 1), colors.accent.alpha(0.35));
     var col_x = x;
-    pushCell(ui, &col_x, y, h, 0, index, row.file.name);
-    pushCell(ui, &col_x, y, h, 1, index, row.file.size_label);
+    pushCellColored(ui, &col_x, y, h, 0, index, row.file.name, colors.text);
+    pushCellColored(ui, &col_x, y, h, 1, index, row.file.size_label, colors.muted);
     for (hash.all_algorithms) |algorithm| {
         if (options.enabled(algorithm)) pushHashCell(ui, &col_x, y, h, 2 + @intFromEnum(algorithm), index, row.result.get(algorithm));
     }
-    pushCell(ui, &col_x, y, h, 10, index, row.status);
-    pushCellWidth(ui, &col_x, y, h, 11, index, row.file.path, pathColumnWidth(ui, options, @as(f32, @floatFromInt(rl.getScreenWidth())) - scale(ui, 12)));
+    pushCellColored(ui, &col_x, y, h, 10, index, row.status, statusColor(row.status));
+    pushCellWidthColored(ui, &col_x, y, h, 11, index, row.file.path, pathColumnWidth(ui, options, @as(f32, @floatFromInt(rl.getScreenWidth())) - scale(ui, 12)), colors.path);
 }
 
 fn pushCell(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8) void {
-    pushCellWidth(ui, x, y, h, column, row, text, scale(ui, ui.column_widths[column]));
+    pushCellColored(ui, x, y, h, column, row, text, colors.text);
 }
 
-fn pushCellWidth(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8, sw: f32) void {
+fn pushCellColored(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8, color: Color) void {
+    pushCellWidthColored(ui, x, y, h, column, row, text, scale(ui, ui.column_widths[column]), color);
+}
+
+fn pushCellWidthColored(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8, sw: f32, color: Color) void {
     const cell = rect(x.*, y, sw, h);
     const selected = ui.selected_row == row and ui.selected_column == column;
-    if (selected) rl.drawRectangleRec(cell, colors.accent.alpha(0.24));
+    if (selected) {
+        rl.drawRectangleRec(cell, colors.selected.alpha(0.72));
+        rl.drawRectangleLinesEx(rect(cell.x + 1, cell.y + 1, cell.width - 2, cell.height - 2), 1, colors.accent);
+    }
     const mouse = rl.getMousePosition();
     if (rl.checkCollisionPointRec(mouse, cell) and rl.isMouseButtonReleased(.left) and ui.resizing_column == null) {
         ui.selected_row = row;
@@ -707,56 +807,81 @@ fn pushCellWidth(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usiz
         }
     }
     rl.drawLine(@intFromFloat(x.* + sw), @intFromFloat(y), @intFromFloat(x.* + sw), @intFromFloat(y + h), colors.border.alpha(0.6));
-    drawTextClipped(ui, text, rect(x.* + scale(ui, 6), y + scale(ui, 5), sw - scale(ui, 12), h - scale(ui, 8)), colors.text);
+    drawTextClipped(ui, text, rect(x.* + scale(ui, 6), y + scale(ui, 5), sw - scale(ui, 12), h - scale(ui, 8)), color);
     x.* += sw;
 }
 
 fn pushHashCell(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8) void {
-    if (!ui.app.uppercase) return pushCell(ui, x, y, h, column, row, text);
+    if (!ui.app.uppercase) return pushCellColored(ui, x, y, h, column, row, text, colors.hash_value);
     var buf: [128]u8 = undefined;
-    pushCell(ui, x, y, h, column, row, uppercaseInto(&buf, text));
+    pushCellColored(ui, x, y, h, column, row, uppercaseInto(&buf, text), colors.hash_value);
+}
+
+fn statusColor(status: []const u8) Color {
+    if (std.mem.indexOf(u8, status, "错误") != null) return colors.danger;
+    if (std.mem.eql(u8, status, "完成")) return colors.success;
+    if (std.mem.eql(u8, status, "排队中") or std.mem.eql(u8, status, "等待中")) return colors.warning;
+    return colors.accent;
 }
 
 fn drawHorizontalScroll(ui: *UiState, area: Rect, content_w: f32) void {
-    rl.drawRectangleRec(area, colors.panel2);
+    rl.drawRectangleRounded(area, 0.45, 8, colors.scrollbar_track);
     const max_scroll = @max(0, content_w - area.width);
     if (max_scroll <= 0) return;
-    const handle_w = @max(scale(ui, 70), area.width * (area.width / content_w));
+    const handle_w = @max(scale(ui, 56), area.width * (area.width / content_w));
     const range = area.width - handle_w;
     var handle_x = area.x + range * (ui.table_scroll_x / max_scroll);
-    const handle = rect(handle_x, area.y, handle_w, area.height);
+    var handle = rect(handle_x, area.y + scale(ui, 2), handle_w, area.height - scale(ui, 4));
     const mouse = rl.getMousePosition();
-    if (rl.isMouseButtonPressed(.left) and rl.checkCollisionPointRec(mouse, handle)) {
+    const hover = rl.checkCollisionPointRec(mouse, handle);
+    if (hover or ui.dragging_hscroll) requestCursor(ui, .resize_ew);
+    if (rl.isMouseButtonPressed(.left) and rl.checkCollisionPointRec(mouse, area)) {
         ui.dragging_hscroll = true;
-        ui.hscroll_grab_offset = mouse.x - handle_x;
+        if (hover) {
+            ui.hscroll_grab_offset = mouse.x - handle_x;
+        } else {
+            handle_x = std.math.clamp(mouse.x - handle_w * 0.5, area.x, area.x + range);
+            ui.hscroll_grab_offset = handle_w * 0.5;
+            ui.table_scroll_x = ((handle_x - area.x) / range) * max_scroll;
+        }
     }
     if (!rl.isMouseButtonDown(.left)) ui.dragging_hscroll = false;
     if (ui.dragging_hscroll) {
         handle_x = std.math.clamp(mouse.x - ui.hscroll_grab_offset, area.x, area.x + range);
         ui.table_scroll_x = ((handle_x - area.x) / range) * max_scroll;
     }
-    rl.drawRectangleRounded(rect(handle_x, area.y + 1, handle_w, area.height - 2), 0.6, 6, colors.muted);
+    handle.x = handle_x;
+    rl.drawRectangleRounded(handle, 0.7, 8, if (ui.dragging_hscroll) colors.accent else if (hover) colors.accent_hover else colors.scrollbar_thumb);
 }
 
 fn drawVerticalScroll(ui: *UiState, area: Rect, content_h: f32) void {
-    rl.drawRectangleRec(area, colors.panel2);
+    rl.drawRectangleRounded(area, 0.45, 8, colors.scrollbar_track);
     const max_scroll = @max(0, content_h - area.height);
     if (max_scroll <= 0) return;
-    const handle_h = @max(scale(ui, 70), area.height * (area.height / content_h));
+    const handle_h = @max(scale(ui, 56), area.height * (area.height / content_h));
     const range = area.height - handle_h;
     var handle_y = area.y + range * (ui.table_scroll_y / max_scroll);
-    const handle = rect(area.x, handle_y, area.width, handle_h);
+    var handle = rect(area.x + scale(ui, 2), handle_y, area.width - scale(ui, 4), handle_h);
     const mouse = rl.getMousePosition();
-    if (rl.isMouseButtonPressed(.left) and rl.checkCollisionPointRec(mouse, handle)) {
+    const hover = rl.checkCollisionPointRec(mouse, handle);
+    if (hover or ui.dragging_vscroll) requestCursor(ui, .resize_ns);
+    if (rl.isMouseButtonPressed(.left) and rl.checkCollisionPointRec(mouse, area)) {
         ui.dragging_vscroll = true;
-        ui.vscroll_grab_offset = mouse.y - handle_y;
+        if (hover) {
+            ui.vscroll_grab_offset = mouse.y - handle_y;
+        } else {
+            handle_y = std.math.clamp(mouse.y - handle_h * 0.5, area.y, area.y + range);
+            ui.vscroll_grab_offset = handle_h * 0.5;
+            ui.table_scroll_y = ((handle_y - area.y) / range) * max_scroll;
+        }
     }
     if (!rl.isMouseButtonDown(.left)) ui.dragging_vscroll = false;
     if (ui.dragging_vscroll) {
         handle_y = std.math.clamp(mouse.y - ui.vscroll_grab_offset, area.y, area.y + range);
         ui.table_scroll_y = ((handle_y - area.y) / range) * max_scroll;
     }
-    rl.drawRectangleRounded(rect(area.x + 1, handle_y, area.width - 2, handle_h), 0.6, 6, colors.muted);
+    handle.y = handle_y;
+    rl.drawRectangleRounded(handle, 0.7, 8, if (ui.dragging_vscroll) colors.accent else if (hover) colors.accent_hover else colors.scrollbar_thumb);
 }
 
 fn totalTableWidth(ui: *UiState, options: hash.HashOptions, viewport_w: f32) f32 {
@@ -777,32 +902,72 @@ fn pathColumnWidth(ui: *UiState, options: hash.HashOptions, viewport_w: f32) f32
 }
 
 fn toolButton(ui: *UiState, r: Rect, icon: Icon, label: []const u8) bool {
-    const clicked = buttonBase(r, colors.button);
-    drawIcon(icon, rect(r.x + scale(ui, 8), r.y + scale(ui, 7), scale(ui, 16), scale(ui, 16)), colors.text);
-    drawTextClipped(ui, label, rect(r.x + scale(ui, 30), r.y + scale(ui, 6), r.width - scale(ui, 34), r.height - scale(ui, 8)), colors.text);
-    return clicked;
+    return toolButtonState(ui, r, icon, label, true, false);
+}
+
+fn toolButtonState(ui: *UiState, r: Rect, icon: Icon, label: []const u8, enabled: bool, active: bool) bool {
+    const base = if (active) colors.danger else colors.button;
+    const visual = buttonBaseVisual(r, base, if (active) colors.close_hover else colors.button_hover, if (active) colors.close_down else colors.button_down, enabled);
+    const offset = if (visual.pressed) scale(ui, 1) else 0;
+    const foreground = if (enabled) colors.text else colors.muted.alpha(0.62);
+    drawIcon(icon, rect(r.x + scale(ui, 8), r.y + scale(ui, 7) + offset, scale(ui, 16), scale(ui, 16)), foreground);
+    drawTextClipped(ui, label, rect(r.x + scale(ui, 30), r.y + scale(ui, 6) + offset, r.width - scale(ui, 34), r.height - scale(ui, 8)), foreground);
+    return visual.clicked;
+}
+
+fn configureContextMenu(ui: *UiState) void {
+    const enable = !ui.context_menu_enabled;
+    if (enable) context_menu.install(ui.allocator) catch {
+        worker.lockMutex(&ui.app.mutex);
+        defer ui.app.mutex.unlock();
+        ui.app.setMessageLocked("右键菜单配置失败");
+        return;
+    } else context_menu.uninstall(ui.allocator) catch {
+        worker.lockMutex(&ui.app.mutex);
+        defer ui.app.mutex.unlock();
+        ui.app.setMessageLocked("右键菜单关闭失败");
+        return;
+    };
+    ui.context_menu_enabled = enable;
+    worker.lockMutex(&ui.app.mutex);
+    defer ui.app.mutex.unlock();
+    ui.app.setMessageLocked(if (enable) "右键菜单已开启" else "右键菜单已关闭");
 }
 
 fn iconButton(ui: *UiState, r: Rect, icon: Icon, base: Color) bool {
-    const clicked = buttonBase(r, base);
-    drawIcon(icon, rect(r.x + scale(ui, 8), r.y + scale(ui, 6), r.width - scale(ui, 16), r.height - scale(ui, 12)), colors.text);
-    return clicked;
+    const visual = if (icon == .close)
+        buttonBaseVisual(r, base, colors.close_hover, colors.close_down, true)
+    else
+        buttonBaseVisual(r, base, colors.button_hover, colors.button_down, true);
+    const offset = if (visual.pressed) scale(ui, 1) else 0;
+    drawIcon(icon, rect(r.x + scale(ui, 8), r.y + scale(ui, 6) + offset, r.width - scale(ui, 16), r.height - scale(ui, 12)), colors.text);
+    return visual.clicked;
 }
 
 fn buttonBase(r: Rect, base: Color) bool {
+    return buttonBaseColors(r, base, colors.button_hover, colors.button_down);
+}
+
+fn buttonBaseColors(r: Rect, base: Color, hover_color: Color, down_color: Color) bool {
+    return buttonBaseVisual(r, base, hover_color, down_color, true).clicked;
+}
+
+fn buttonBaseVisual(r: Rect, base: Color, hover_color: Color, down_color: Color, enabled: bool) ButtonVisual {
     const mouse = rl.getMousePosition();
-    const hover = rl.checkCollisionPointRec(mouse, r);
+    const hover = enabled and rl.checkCollisionPointRec(mouse, r);
     const down = hover and rl.isMouseButtonDown(.left);
-    rl.drawRectangleRounded(r, 0.12, 6, if (down) colors.button_down else if (hover) colors.button_hover else base);
-    rl.drawRectangleRoundedLinesEx(r, 0.12, 6, 1, colors.border);
-    return hover and rl.isMouseButtonReleased(.left);
+    rl.drawRectangleRounded(rect(r.x, r.y + 1, r.width, r.height), 0.12, 6, Color.init(0, 0, 0, 80));
+    rl.drawRectangleRounded(r, 0.12, 6, if (!enabled) colors.button_disabled else if (down) down_color else if (hover) hover_color else base);
+    rl.drawRectangleRoundedLinesEx(r, 0.12, 6, 1, if (hover) colors.accent.alpha(0.78) else colors.border);
+    return .{ .clicked = hover and rl.isMouseButtonReleased(.left), .hovered = hover, .pressed = down };
 }
 
 fn filterButton(ui: *UiState, r: Rect) bool {
-    const clicked = buttonBase(r, colors.button);
-    drawTextClipped(ui, currentFilterLabel(ui), rect(r.x + scale(ui, 10), r.y + scale(ui, 6), r.width - scale(ui, 34), r.height - scale(ui, 8)), colors.text);
-    drawIcon(.chevron_down, rect(r.x + r.width - scale(ui, 24), r.y + scale(ui, 8), scale(ui, 14), scale(ui, 14)), colors.text);
-    return clicked;
+    const visual = buttonBaseVisual(r, colors.button, colors.button_hover, colors.button_down, true);
+    const offset = if (visual.pressed) scale(ui, 1) else 0;
+    drawTextClipped(ui, currentFilterLabel(ui), rect(r.x + scale(ui, 10), r.y + scale(ui, 6) + offset, r.width - scale(ui, 34), r.height - scale(ui, 8)), colors.text);
+    drawIcon(.chevron_down, rect(r.x + r.width - scale(ui, 24), r.y + scale(ui, 8) + offset, scale(ui, 14), scale(ui, 14)), colors.text);
+    return visual.clicked;
 }
 
 fn drawFilterPopup(ui: *UiState) void {
@@ -850,10 +1015,11 @@ fn checkbox(ui: *UiState, r: Rect, label: []const u8, value: *bool) bool {
     const mouse = rl.getMousePosition();
     const hover = rl.checkCollisionPointRec(mouse, r);
     if (hover and rl.isMouseButtonReleased(.left)) value.* = !value.*;
+    if (hover) rl.drawRectangleRounded(r, 0.12, 6, colors.panel2.alpha(0.72));
     const box = rect(r.x, r.y + scale(ui, 3), scale(ui, 17), scale(ui, 17));
-    rl.drawRectangleRec(box, if (value.*) colors.button else colors.input);
-    rl.drawRectangleLinesEx(box, 1, colors.border);
-    if (value.*) drawIcon(.check, rect(box.x + scale(ui, 3), box.y + scale(ui, 3), box.width - scale(ui, 6), box.height - scale(ui, 6)), colors.accent);
+    rl.drawRectangleRounded(box, 0.22, 6, if (value.*) colors.accent else colors.input);
+    rl.drawRectangleRoundedLinesEx(box, 0.22, 6, 1, if (hover) colors.accent_hover else colors.border);
+    if (value.*) drawIcon(.check, rect(box.x + scale(ui, 3), box.y + scale(ui, 3), box.width - scale(ui, 6), box.height - scale(ui, 6)), colors.text);
     drawTextClipped(ui, label, rect(r.x + scale(ui, 24), r.y + scale(ui, 2), r.width - scale(ui, 26), r.height - scale(ui, 4)), colors.text);
     return hover and rl.isMouseButtonReleased(.left);
 }
@@ -905,6 +1071,14 @@ fn drawIcon(icon: Icon, r: Rect, color: Color) void {
         .chevron_down => {
             rl.drawLineEx(vec(x + w * 0.20, y + h * 0.35), vec(x + w * 0.50, y + h * 0.68), thick, color);
             rl.drawLineEx(vec(x + w * 0.80, y + h * 0.35), vec(x + w * 0.50, y + h * 0.68), thick, color);
+        },
+        .settings => {
+            rl.drawCircleLinesV(vec(x + w * 0.50, y + h * 0.50), w * 0.26, color);
+            rl.drawCircleV(vec(x + w * 0.50, y + h * 0.50), w * 0.08, color);
+            rl.drawLineEx(vec(x + w * 0.50, y + h * 0.10), vec(x + w * 0.50, y + h * 0.25), thick, color);
+            rl.drawLineEx(vec(x + w * 0.50, y + h * 0.75), vec(x + w * 0.50, y + h * 0.90), thick, color);
+            rl.drawLineEx(vec(x + w * 0.10, y + h * 0.50), vec(x + w * 0.25, y + h * 0.50), thick, color);
+            rl.drawLineEx(vec(x + w * 0.75, y + h * 0.50), vec(x + w * 0.90, y + h * 0.50), thick, color);
         },
     }
 }
