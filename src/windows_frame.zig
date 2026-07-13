@@ -17,6 +17,14 @@ const NcCalcSizeParams = extern struct {
     window_pos: *WindowPos,
 };
 
+const CopyData = extern struct {
+    dw_data: usize,
+    cb_data: u32,
+    lp_data: ?*const anyopaque,
+};
+
+pub const CopyDataHandler = *const fn (?*anyopaque, []const u8) void;
+
 extern "dwmapi" fn DwmSetWindowAttribute(hwnd: ?*anyopaque, attribute: u32, value: ?*const anyopaque, value_size: u32) callconv(.winapi) i32;
 extern "gdi32" fn CreateRoundRectRgn(left: i32, top: i32, right: i32, bottom: i32, width: i32, height: i32) callconv(.winapi) ?*anyopaque;
 extern "user32" fn SetWindowRgn(hwnd: ?*anyopaque, region: ?*anyopaque, redraw: bool) callconv(.winapi) c_int;
@@ -49,6 +57,7 @@ const swp_nozorder: c_uint = 0x0004;
 const swp_noactivate: c_uint = 0x0010;
 const wm_nccalcsize: u32 = 0x0083;
 const wm_nchittest: u32 = 0x0084;
+pub const wm_copydata: u32 = 0x004A;
 const wm_syscommand: c_uint = 0x0112;
 const wm_close: c_uint = 0x0010;
 const sm_cxframe: c_int = 32;
@@ -59,9 +68,17 @@ const sc_maximize: usize = 0xF030;
 const sc_restore: usize = 0xF120;
 const ht_client: isize = 1;
 const ht_caption: isize = 2;
+pub const copy_data_id: usize = 0x4841_5348;
 
 var installed_hwnd: ?*anyopaque = null;
 var previous_wnd_proc: ?WndProc = null;
+var copy_data_context: ?*anyopaque = null;
+var copy_data_handler: ?CopyDataHandler = null;
+
+pub fn setCopyDataHandler(context: ?*anyopaque, handler: ?CopyDataHandler) void {
+    copy_data_context = context;
+    copy_data_handler = handler;
+}
 
 pub const ResizeSession = struct {
     hit_test: c_int,
@@ -159,9 +176,19 @@ fn windowProc(hwnd: ?*anyopaque, message: u32, wparam: usize, lparam: isize) cal
             return 0;
         },
         wm_nchittest => return hitTest(hwnd),
+        wm_copydata => if (dispatchCopyData(lparam)) return 1,
         else => {},
     }
     return CallWindowProcW(previous_wnd_proc, hwnd, message, wparam, lparam);
+}
+
+fn dispatchCopyData(lparam: isize) bool {
+    if (lparam == 0) return false;
+    const data: *const CopyData = @ptrFromInt(@as(usize, @bitCast(lparam)));
+    if (data.dw_data != copy_data_id or data.cb_data == 0 or data.lp_data == null) return false;
+    const bytes: [*]const u8 = @ptrCast(data.lp_data.?);
+    if (copy_data_handler) |handler| handler(copy_data_context, bytes[0..data.cb_data]);
+    return copy_data_handler != null;
 }
 
 fn adjustMaximizedClientRect(hwnd: ?*anyopaque, lparam: isize) void {

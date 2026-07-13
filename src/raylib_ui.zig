@@ -6,6 +6,7 @@ const worker = @import("worker.zig");
 const font_atlas = @import("font_atlas.zig");
 const embedded_assets = @import("embedded_assets");
 const context_menu = @import("context_menu.zig");
+const single_instance = @import("single_instance.zig");
 const windows_frame = @import("windows_frame.zig");
 const lucide = @import("lucide_atlas.zig");
 
@@ -205,6 +206,7 @@ const UiState = struct {
     rounded_frame_height: i32 = 0,
     rounded_frame_maximized: bool = false,
     context_menu_enabled: bool = false,
+    context_queue: *single_instance.RequestQueue,
     current_cursor: rl.MouseCursor = .default,
     requested_cursor: rl.MouseCursor = .default,
     window_resize: ?windows_frame.ResizeSession = null,
@@ -215,12 +217,13 @@ const UiState = struct {
     toast_until: f64 = 0,
     toast_text: []const u8 = "",
 
-    fn init(allocator: std.mem.Allocator, io: std.Io) !UiState {
+    fn init(allocator: std.mem.Allocator, io: std.Io, context_queue: *single_instance.RequestQueue) !UiState {
         return .{
             .allocator = allocator,
             .io = io,
             .app = try worker.AppState.init(allocator, io),
             .drawn_codepoints = std.AutoHashMap(i32, void).init(allocator),
+            .context_queue = context_queue,
         };
     }
 
@@ -242,7 +245,7 @@ fn defaultColumnOrder() [12]usize {
     return .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
 }
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io, context_request: ?context_menu.ContextHashRequest) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, context_request: ?context_menu.ContextHashRequest, context_queue: *single_instance.RequestQueue) !void {
     rl.setConfigFlags(.{
         .window_resizable = true,
         .window_undecorated = true,
@@ -250,15 +253,17 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_request: ?context_m
         .msaa_4x_hint = true,
         .vsync_hint = true,
     });
-    rl.initWindow(1180, 760, "Hasher 1.5");
+    rl.initWindow(1180, 760, single_instance.window_title);
     defer rl.closeWindow();
     windows_frame.installNativeFrame(rl.getWindowHandle());
     setAppIcon();
     rl.setExitKey(.null);
     rl.setTargetFPS(60);
 
-    var ui = try UiState.init(allocator, io);
+    var ui = try UiState.init(allocator, io, context_queue);
     defer ui.deinit();
+    windows_frame.setCopyDataHandler(ui.context_queue, single_instance.handleCopyData);
+    defer windows_frame.setCopyDataHandler(null, null);
     ui.context_menu_enabled = context_menu.isInstalled(allocator);
     if (ui.context_menu_enabled) context_menu.install(allocator) catch {};
     updateScale(&ui);
@@ -267,13 +272,14 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_request: ?context_m
     ui.lucide_atlas = lucide.Atlas.init(embedded_assets.lucide_icons_png) catch null;
     try loadFont(&ui);
     rl.setWindowMinSize(820, 520);
-    if (context_request) |request| startContextHash(&ui, request);
+    if (context_request) |request| ui.context_queue.enqueueRequest(request);
 
     while (!rl.windowShouldClose()) {
         beginCursorFrame(&ui);
         updateScale(&ui);
         updateWindowFrame(&ui);
         handleDrops(&ui);
+        ui.context_queue.startIfReady(&ui.app, rl.getTime());
         handleSearchInput(&ui);
         handleWindowResize(&ui);
         handleWindowDrag(&ui);
@@ -310,14 +316,6 @@ fn updateWindowFrame(ui: *UiState) void {
     ui.rounded_frame_width = width;
     ui.rounded_frame_height = height;
     ui.rounded_frame_maximized = maximized;
-}
-
-fn startContextHash(ui: *UiState, request: context_menu.ContextHashRequest) void {
-    worker.lockMutex(&ui.app.mutex);
-    ui.app.options = request.options;
-    ui.app.mutex.unlock();
-    ui.app.addDroppedPaths(&.{request.path});
-    ui.app.start() catch {};
 }
 
 fn setAppIcon() void {

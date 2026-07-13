@@ -66,6 +66,7 @@ fn configureRaylib(
         exe.root_module.linkSystemLibrary("winmm", .{});
         exe.root_module.linkSystemLibrary("comdlg32", .{});
         exe.root_module.linkSystemLibrary("shell32", .{});
+        exe.root_module.linkSystemLibrary("ole32", .{});
         exe.root_module.addWin32ResourceFile(.{ .file = b.path("assets/hasher.rc") });
     }
 }
