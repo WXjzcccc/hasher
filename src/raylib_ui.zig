@@ -74,6 +74,7 @@ const Color = rl.Color;
 const Vec2 = rl.Vector2;
 const Rect = rl.Rectangle;
 const logical_font_size: f32 = 16;
+const column_count: usize = 12;
 
 const colors = struct {
     const bg = Color.init(14, 17, 19, 255);
@@ -107,6 +108,11 @@ const ButtonVisual = struct {
     clicked: bool,
     hovered: bool,
     pressed: bool,
+};
+
+const ColumnDrop = struct {
+    target: usize,
+    before: bool,
 };
 
 const Icon = enum {
@@ -187,6 +193,12 @@ const UiState = struct {
     vscroll_grab_offset: f32 = 0,
     column_widths: [12]f32 = defaultColumnWidths(),
     resizing_column: ?usize = null,
+    resize_start_x: f32 = 0,
+    resize_start_width: f32 = 0,
+    column_order: [12]usize = defaultColumnOrder(),
+    dragging_column: ?usize = null,
+    drag_start_x: f32 = 0,
+    drag_moved: bool = false,
     selected_row: ?usize = null,
     selected_column: ?usize = null,
     rounded_frame_width: i32 = 0,
@@ -224,6 +236,10 @@ const UiState = struct {
 
 fn defaultColumnWidths() [12]f32 {
     return .{ 180, 126, 170, 170, 170, 170, 170, 170, 170, 170, 92, 380 };
+}
+
+fn defaultColumnOrder() [12]usize {
+    return .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_request: ?context_menu.ContextHashRequest) !void {
@@ -757,17 +773,20 @@ fn drawTable(ui: *UiState, w: f32, h: f32, top: f32) void {
     defer ui.app.mutex.unlock();
 
     const content_w = totalTableWidth(ui, ui.app.options, table_w);
-    const max_scroll_x = @max(0, content_w - table_w);
-    ui.table_scroll_x = std.math.clamp(ui.table_scroll_x, 0, max_scroll_x);
+    var visible_count: usize = 0;
+    for (ui.app.rows.items) |row| {
+        if (rowMatches(ui, row)) visible_count += 1;
+    }
+    const content_h = @as(f32, @floatFromInt(visible_count)) * row_h;
 
-    var visible_index: usize = 0;
     rl.drawRectangleRounded(rect(table_x, top, table_w, table_h), 0.018, 8, colors.panel);
     rl.drawRectangleRoundedLinesEx(rect(table_x, top, table_w, table_h), 0.018, 8, 1, colors.border);
     const body = rect(table_x, top + header_h, table_w, table_h - header_h - scrollbar_size);
-    handleTableScroll(ui, body, row_h, content_w);
+    handleTableScroll(ui, body, content_w, content_h);
     {
         beginScissor(ui, body);
         defer rl.endScissorMode();
+        var visible_index: usize = 0;
         for (ui.app.rows.items) |row| {
             if (!rowMatches(ui, row)) continue;
             const row_y = body.y + @as(f32, @floatFromInt(visible_index)) * row_h - ui.table_scroll_y;
@@ -775,60 +794,98 @@ fn drawTable(ui: *UiState, w: f32, h: f32, top: f32) void {
             visible_index += 1;
         }
     }
-    const max_scroll_y = @max(0, @as(f32, @floatFromInt(visible_index)) * row_h - body.height);
-    ui.table_scroll_y = std.math.clamp(ui.table_scroll_y, 0, max_scroll_y);
 
     drawTableHeader(ui, table_x, top, table_w, header_h, ui.app.options);
     drawHorizontalScroll(ui, rect(table_x, bottom - scrollbar_size, table_w, scrollbar_size), content_w);
-    drawVerticalScroll(ui, rect(table_x + table_w - vscroll_w, body.y, vscroll_w, body.height), @as(f32, @floatFromInt(visible_index)) * row_h);
+    drawVerticalScroll(ui, rect(table_x + table_w - vscroll_w, body.y, vscroll_w, body.height), content_h);
 }
 
-fn handleTableScroll(ui: *UiState, area: Rect, row_h: f32, content_w: f32) void {
-    _ = row_h;
-    if (!rl.checkCollisionPointRec(rl.getMousePosition(), area)) return;
-    const wheel = rl.getMouseWheelMoveV();
-    if (wheel.y != 0) {
-        if (rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift)) {
-            ui.table_scroll_x -= wheel.y * scale(ui, 42);
-        } else {
-            ui.table_scroll_y -= wheel.y * scale(ui, 42);
+fn handleTableScroll(ui: *UiState, area: Rect, content_w: f32, content_h: f32) void {
+    if (rl.checkCollisionPointRec(rl.getMousePosition(), area)) {
+        const wheel = rl.getMouseWheelMoveV();
+        if (wheel.y != 0) {
+            if (rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift)) {
+                ui.table_scroll_x -= wheel.y * scale(ui, 42);
+            } else {
+                ui.table_scroll_y -= wheel.y * scale(ui, 42);
+            }
         }
     }
     ui.table_scroll_x = std.math.clamp(ui.table_scroll_x, 0, @max(0, content_w - area.width));
+    ui.table_scroll_y = std.math.clamp(ui.table_scroll_y, 0, @max(0, content_h - area.height));
 }
 
 fn drawTableHeader(ui: *UiState, x: f32, y: f32, width: f32, h: f32, options: hash.HashOptions) void {
     rl.drawRectangleRounded(rect(x, y, width, h), 0.10, 6, colors.panel2);
     rl.drawLine(@intFromFloat(x), @intFromFloat(y + h - 1), @intFromFloat(x + width), @intFromFloat(y + h - 1), colors.border);
-    var col_x = x - ui.table_scroll_x;
-    pushHeader(ui, &col_x, y, h, 0, "文件");
-    pushHeader(ui, &col_x, y, h, 1, "大小");
-    for (hash.all_algorithms) |algorithm| {
-        if (options.enabled(algorithm)) pushHeader(ui, &col_x, y, h, 2 + @intFromEnum(algorithm), algorithmLabelZ(algorithm));
+
+    if (!rl.isMouseButtonDown(.left)) {
+        ui.resizing_column = null;
+        ui.dragging_column = null;
+        ui.drag_moved = false;
     }
-    pushHeader(ui, &col_x, y, h, 10, "状态");
-    pushHeaderWidth(ui, &col_x, y, h, 11, "完整路径", pathColumnWidth(ui, options, width));
+    if (ui.dragging_column != null) requestCursor(ui, .resize_all);
+
+    var col_x = x - ui.table_scroll_x;
+    var pending_drop: ?ColumnDrop = null;
+    for (ui.column_order) |column| {
+        if (!isColumnVisible(options, column)) continue;
+        const sw = columnWidth(ui, options, column, width);
+        if (pushHeaderWidth(ui, &col_x, y, h, column, columnLabel(column), sw)) |drop| {
+            pending_drop = drop;
+        }
+    }
+
+    if (pending_drop) |drop| {
+        if (ui.dragging_column) |dragging| moveColumn(ui, dragging, drop.target, drop.before);
+    }
 }
 
-fn pushHeader(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, text: []const u8) void {
-    pushHeaderWidth(ui, x, y, h, column, text, scale(ui, ui.column_widths[column]));
-}
-
-fn pushHeaderWidth(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, text: []const u8, sw: f32) void {
+fn pushHeaderWidth(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, text: []const u8, sw: f32) ?ColumnDrop {
     const right = x.* + sw;
     const mouse = rl.getMousePosition();
+    const header = rect(x.*, y, sw, h);
     const grip = rect(right - scale(ui, 4), y, scale(ui, 8), h);
-    if (rl.checkCollisionPointRec(mouse, grip)) requestCursor(ui, .resize_ew);
-    if (!ui.pointer_blocked and rl.checkCollisionPointRec(mouse, grip) and rl.isMouseButtonPressed(.left)) ui.resizing_column = column;
-    if (ui.resizing_column == column and rl.isMouseButtonDown(.left)) {
-        const logical_right = mouse.x + ui.table_scroll_x;
-        const logical_left = x.* + ui.table_scroll_x;
-        ui.column_widths[column] = @max(54, logical_right - logical_left);
+    const hovered = !ui.pointer_blocked and rl.checkCollisionPointRec(mouse, header);
+    const over_grip = hovered and rl.checkCollisionPointRec(mouse, grip);
+    var drop: ?ColumnDrop = null;
+
+    if (hovered and rl.isMouseButtonPressed(.left) and ui.resizing_column == null and ui.dragging_column == null) {
+        if (over_grip) {
+            ui.resizing_column = column;
+            ui.resize_start_x = mouse.x;
+            ui.resize_start_width = sw / scale(ui, 1);
+        } else {
+            ui.dragging_column = column;
+            ui.drag_start_x = mouse.x;
+            ui.drag_moved = false;
+        }
     }
-    if (!rl.isMouseButtonDown(.left) and ui.resizing_column == column) ui.resizing_column = null;
+
+    if (ui.resizing_column == column) {
+        requestCursor(ui, .resize_ew);
+        if (rl.isMouseButtonDown(.left)) {
+            ui.column_widths[column] = @max(minColumnWidth(ui, column), ui.resize_start_width + mouse.x - ui.resize_start_x);
+        }
+    } else if (ui.dragging_column) |dragging| {
+        requestCursor(ui, .resize_all);
+        if (rl.isMouseButtonDown(.left) and @abs(mouse.x - ui.drag_start_x) >= scale(ui, 4)) ui.drag_moved = true;
+        if (dragging != column and ui.drag_moved and rl.isMouseButtonDown(.left) and hovered and !over_grip) {
+            drop = .{ .target = column, .before = mouse.x < x.* + sw * 0.5 };
+        }
+    } else if (hovered) {
+        requestCursor(ui, if (over_grip) .resize_ew else .pointing_hand);
+    }
+
+    if (ui.dragging_column == column and hovered and rl.isMouseButtonDown(.left)) {
+        requestCursor(ui, .resize_all);
+    }
+
+    if (ui.dragging_column == column) rl.drawRectangleRec(header, colors.selected.alpha(0.45));
     rl.drawLine(@intFromFloat(right), @intFromFloat(y), @intFromFloat(right), @intFromFloat(y + h), colors.border);
     drawTextClipped(ui, text, rect(x.* + scale(ui, 6), y + scale(ui, 5), sw - scale(ui, 12), h - scale(ui, 8)), colors.text);
     x.* += sw;
+    return drop;
 }
 
 fn drawRow(ui: *UiState, row: worker.Row, x: f32, y: f32, h: f32, index: usize, options: hash.HashOptions) void {
@@ -838,13 +895,20 @@ fn drawRow(ui: *UiState, row: worker.Row, x: f32, y: f32, h: f32, index: usize, 
     rl.drawRectangleRec(row_rect, bg);
     if (hovered) rl.drawLine(@intFromFloat(row_rect.x), @intFromFloat(y + h - 1), @intFromFloat(row_rect.x + row_rect.width), @intFromFloat(y + h - 1), colors.accent.alpha(0.35));
     var col_x = x;
-    pushCellColored(ui, &col_x, y, h, 0, index, row.file.name, colors.text);
-    pushCellColored(ui, &col_x, y, h, 1, index, row.file.size_label, colors.muted);
-    for (hash.all_algorithms) |algorithm| {
-        if (options.enabled(algorithm)) pushHashCell(ui, &col_x, y, h, 2 + @intFromEnum(algorithm), index, row.result.get(algorithm));
+    const viewport_w: f32 = @floatFromInt(rl.getScreenWidth());
+    for (ui.column_order) |column| {
+        if (!isColumnVisible(options, column)) continue;
+        switch (column) {
+            0 => pushCellColored(ui, &col_x, y, h, column, index, row.file.name, colors.text),
+            1 => pushCellColored(ui, &col_x, y, h, column, index, row.file.size_label, colors.muted),
+            10 => pushCellColored(ui, &col_x, y, h, column, index, row.status, statusColor(row.status)),
+            11 => pushCellWidthColored(ui, &col_x, y, h, column, index, row.file.path, columnWidth(ui, options, column, viewport_w - scale(ui, 12)), colors.path),
+            else => {
+                const algorithm: hash.Algorithm = @enumFromInt(column - 2);
+                pushHashCell(ui, &col_x, y, h, column, index, row.result.get(algorithm));
+            },
+        }
     }
-    pushCellColored(ui, &col_x, y, h, 10, index, row.status, statusColor(row.status));
-    pushCellWidthColored(ui, &col_x, y, h, 11, index, row.file.path, pathColumnWidth(ui, options, @as(f32, @floatFromInt(rl.getScreenWidth())) - scale(ui, 12)), colors.path);
 }
 
 fn pushCell(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8) void {
@@ -957,12 +1021,60 @@ fn drawVerticalScroll(ui: *UiState, area: Rect, content_h: f32) void {
     rl.drawRectangleRounded(handle, 0.7, 8, if (ui.dragging_vscroll) colors.accent else if (hover) colors.accent_hover else colors.scrollbar_thumb);
 }
 
+fn isColumnVisible(options: hash.HashOptions, column: usize) bool {
+    if (column <= 1 or column >= 10) return true;
+    const algorithm: hash.Algorithm = @enumFromInt(column - 2);
+    return options.enabled(algorithm);
+}
+
+fn columnLabel(column: usize) []const u8 {
+    return switch (column) {
+        0 => "文件",
+        1 => "大小",
+        10 => "状态",
+        11 => "完整路径",
+        else => algorithmLabelZ(@enumFromInt(column - 2)),
+    };
+}
+
+fn columnWidth(ui: *const UiState, options: hash.HashOptions, column: usize, viewport_w: f32) f32 {
+    if (column == 11) return pathColumnWidth(ui, options, viewport_w);
+    return scale(ui, ui.column_widths[column]);
+}
+
+fn minColumnWidth(ui: *const UiState, column: usize) f32 {
+    _ = column;
+    return scale(ui, 54);
+}
+
+fn moveColumn(ui: *UiState, from_column: usize, target_column: usize, before: bool) void {
+    if (from_column == target_column) return;
+    const from_index = std.mem.indexOfScalar(usize, &ui.column_order, from_column) orelse return;
+
+    var remaining: [column_count]usize = undefined;
+    var remaining_count: usize = 0;
+    for (ui.column_order) |column| {
+        if (column == from_column) continue;
+        remaining[remaining_count] = column;
+        remaining_count += 1;
+    }
+    _ = from_index;
+
+    const target_index = std.mem.indexOfScalar(usize, remaining[0..remaining_count], target_column) orelse return;
+    const insert_index: usize = target_index + if (before) @as(usize, 0) else @as(usize, 1);
+    var next: [column_count]usize = undefined;
+    for (0..insert_index) |index| next[index] = remaining[index];
+    next[insert_index] = from_column;
+    for (insert_index..remaining_count) |index| next[index + 1] = remaining[index];
+    ui.column_order = next;
+}
+
 fn totalTableWidth(ui: *UiState, options: hash.HashOptions, viewport_w: f32) f32 {
     const total = fixedTableWidth(ui, options) + pathColumnWidth(ui, options, viewport_w);
     return total;
 }
 
-fn fixedTableWidth(ui: *UiState, options: hash.HashOptions) f32 {
+fn fixedTableWidth(ui: *const UiState, options: hash.HashOptions) f32 {
     var total = ui.column_widths[0] + ui.column_widths[1] + ui.column_widths[10];
     for (hash.all_algorithms) |algorithm| {
         if (options.enabled(algorithm)) total += ui.column_widths[2 + @intFromEnum(algorithm)];
@@ -970,7 +1082,7 @@ fn fixedTableWidth(ui: *UiState, options: hash.HashOptions) f32 {
     return scale(ui, total);
 }
 
-fn pathColumnWidth(ui: *UiState, options: hash.HashOptions, viewport_w: f32) f32 {
+fn pathColumnWidth(ui: *const UiState, options: hash.HashOptions, viewport_w: f32) f32 {
     return @max(scale(ui, ui.column_widths[11]), viewport_w - fixedTableWidth(ui, options));
 }
 
@@ -1092,12 +1204,14 @@ fn drawToast(ui: *UiState, screen_w: f32, screen_h: f32) void {
     rl.drawRectangleRounded(toast, 0.22, 8, colors.panel2.alpha(alpha));
     rl.drawRectangleRoundedLinesEx(toast, 0.22, 8, 1, colors.accent.alpha(alpha));
     drawIcon(ui, .check, rect(toast.x + scale(ui, 10), toast.y + scale(ui, 10), scale(ui, 16), scale(ui, 16)), colors.success.alpha(alpha));
-    drawTextClipped(ui, ui.toast_text, rect(toast.x + scale(ui, 32), toast.y + scale(ui, 6), toast.width - scale(ui, 42), toast.height - scale(ui, 12)), colors.text.alpha(alpha));
+    drawTextCentered(ui, ui.toast_text, rect(toast.x + scale(ui, 32), toast.y, toast.width - scale(ui, 42), toast.height), colors.text.alpha(alpha));
 }
 
 fn drawSearch(ui: *UiState, r: Rect) void {
     const mouse = rl.getMousePosition();
-    if (!ui.pointer_blocked and rl.isMouseButtonPressed(.left)) ui.search_active = rl.checkCollisionPointRec(mouse, r);
+    const hovered = !ui.pointer_blocked and rl.checkCollisionPointRec(mouse, r);
+    if (!ui.pointer_blocked and rl.isMouseButtonPressed(.left)) ui.search_active = hovered;
+    if (hovered or ui.search_active) requestCursor(ui, .ibeam);
     rl.drawRectangleRounded(r, 0.1, 6, colors.input);
     rl.drawRectangleRoundedLinesEx(r, 0.1, 6, 1, if (ui.search_active) colors.accent else colors.border);
     const text = ui.search_buf[0..ui.search_len];
@@ -1146,6 +1260,14 @@ fn iconToLucide(icon: Icon) lucide.Icon {
 }
 
 fn drawTextClipped(ui: *UiState, text: []const u8, r: Rect, color: Color) void {
+    drawTextClippedWithOffset(ui, text, r, color, -scale(ui, 2));
+}
+
+fn drawTextCentered(ui: *UiState, text: []const u8, r: Rect, color: Color) void {
+    drawTextClippedWithOffset(ui, text, r, color, 0);
+}
+
+fn drawTextClippedWithOffset(ui: *UiState, text: []const u8, r: Rect, color: Color, vertical_offset: f32) void {
     if (r.width <= 2 or r.height <= 2) return;
     trackDrawnText(ui, text) catch {};
     var cps: [512]i32 = undefined;
@@ -1161,7 +1283,7 @@ fn drawTextClipped(ui: *UiState, text: []const u8, r: Rect, color: Color) void {
     beginScissor(ui, rect(r.x, r.y - scale(ui, 2), r.width, r.height + scale(ui, 4)));
     defer rl.endScissorMode();
     const font_size = scale(ui, logical_font_size);
-    const y = r.y + @max(0, (r.height - font_size) * 0.5) - scale(ui, 2);
+    const y = r.y + @max(0, (r.height - font_size) * 0.5) + vertical_offset;
     const position = vec(snapToPhysicalPixel(ui, r.x), snapToPhysicalPixel(ui, y));
     rl.drawTextCodepoints(ui.font, cps[0..draw_n], position, font_size, scale(ui, 1), color);
 }
