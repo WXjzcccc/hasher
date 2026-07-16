@@ -7,5 +7,3 @@
 不过本工具支持SM3、CRC64算法，弥补一下其他哈希工具的不足
 
 ![img.png](imgs/img.png)
-
-* 基于Wails2开发，编译命令`wails build`
