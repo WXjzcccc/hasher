@@ -25,8 +25,12 @@ pub const Algorithm = enum {
     }
 };
 
-pub const algorithm_count = std.meta.fields(Algorithm).len;
-pub const all_algorithms = std.enums.values(Algorithm);
+pub const algorithm_count = @typeInfo(Algorithm).@"enum".field_values.len;
+pub const all_algorithms: [algorithm_count]Algorithm = blk: {
+    var result: [algorithm_count]Algorithm = undefined;
+    for (@typeInfo(Algorithm).@"enum".field_values, 0..) |value, i| result[i] = @fromBackingInt(@intCast(value));
+    break :blk result;
+};
 
 pub const HashOptions = packed struct {
     md5: bool = false,
@@ -89,7 +93,7 @@ pub const HashOptions = packed struct {
 };
 
 pub const HashResult = struct {
-    values: [algorithm_count][]u8 = [_][]u8{&.{}} ** algorithm_count,
+    values: [algorithm_count][]u8 = @splat(&.{}),
 
     pub fn deinit(self: *HashResult, allocator: std.mem.Allocator) void {
         for (&self.values) |*value| {
@@ -99,12 +103,12 @@ pub const HashResult = struct {
     }
 
     pub fn get(self: HashResult, algorithm: Algorithm) []const u8 {
-        return self.values[@intFromEnum(algorithm)];
+        return self.values[@backingInt(algorithm)];
     }
 };
 
-const Crc64Iso = std.hash.crc.Crc64GoIso;
-const Crc64Ecma = std.hash.crc.Crc64Xz;
+const Crc64Iso = std.hash.crc.@"CRC-64/GO-ISO";
+const Crc64Ecma = std.hash.crc.@"CRC-64/XZ";
 
 pub fn calculateFile(
     allocator: std.mem.Allocator,
@@ -125,7 +129,7 @@ pub fn calculateFile(
     var sha256 = std.crypto.hash.sha2.Sha256.init(.{});
     var sha512 = std.crypto.hash.sha2.Sha512.init(.{});
     var sm3_hash = sm3.Sm3.init();
-    var crc32 = std.hash.crc.Crc32.init();
+    var crc32 = std.hash.crc.@"CRC-32/ISO-HDLC".init();
     var crc64_iso = Crc64Iso.init();
     var crc64_ecma = Crc64Ecma.init();
     while (true) {
@@ -148,18 +152,18 @@ pub fn calculateFile(
 
     var result = HashResult{};
     errdefer result.deinit(allocator);
-    if (options.md5) result.values[@intFromEnum(Algorithm.md5)] = try digestHex(allocator, std.crypto.hash.Md5, &md5);
-    if (options.sha1) result.values[@intFromEnum(Algorithm.sha1)] = try digestHex(allocator, std.crypto.hash.Sha1, &sha1);
-    if (options.sha256) result.values[@intFromEnum(Algorithm.sha256)] = try digestHex(allocator, std.crypto.hash.sha2.Sha256, &sha256);
-    if (options.sha512) result.values[@intFromEnum(Algorithm.sha512)] = try digestHex(allocator, std.crypto.hash.sha2.Sha512, &sha512);
+    if (options.md5) result.values[@backingInt(Algorithm.md5)] = try digestHex(allocator, std.crypto.hash.Md5, &md5);
+    if (options.sha1) result.values[@backingInt(Algorithm.sha1)] = try digestHex(allocator, std.crypto.hash.Sha1, &sha1);
+    if (options.sha256) result.values[@backingInt(Algorithm.sha256)] = try digestHex(allocator, std.crypto.hash.sha2.Sha256, &sha256);
+    if (options.sha512) result.values[@backingInt(Algorithm.sha512)] = try digestHex(allocator, std.crypto.hash.sha2.Sha512, &sha512);
     if (options.sm3) {
         var out: [sm3.digest_length]u8 = undefined;
         sm3_hash.final(&out);
-        result.values[@intFromEnum(Algorithm.sm3)] = try bytesToHex(allocator, &out);
+        result.values[@backingInt(Algorithm.sm3)] = try bytesToHex(allocator, &out);
     }
-    if (options.crc32) result.values[@intFromEnum(Algorithm.crc32)] = try intHex(allocator, u32, crc32.final());
-    if (options.crc64_iso) result.values[@intFromEnum(Algorithm.crc64_iso)] = try intHex(allocator, u64, crc64_iso.final());
-    if (options.crc64_ecma) result.values[@intFromEnum(Algorithm.crc64_ecma)] = try intHex(allocator, u64, crc64_ecma.final());
+    if (options.crc32) result.values[@backingInt(Algorithm.crc32)] = try intHex(allocator, u32, crc32.final());
+    if (options.crc64_iso) result.values[@backingInt(Algorithm.crc64_iso)] = try intHex(allocator, u64, crc64_iso.final());
+    if (options.crc64_ecma) result.values[@backingInt(Algorithm.crc64_ecma)] = try intHex(allocator, u64, crc64_ecma.final());
     return result;
 }
 

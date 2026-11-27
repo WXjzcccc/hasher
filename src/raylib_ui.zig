@@ -12,6 +12,15 @@ const lucide = @import("lucide_atlas.zig");
 
 extern "comdlg32" fn GetSaveFileNameW(ofn: *OpenFileNameW) callconv(.winapi) bool;
 
+extern "user32" fn OpenClipboard(hwnd: ?*anyopaque) callconv(.winapi) bool;
+extern "user32" fn CloseClipboard() callconv(.winapi) bool;
+extern "user32" fn GetClipboardData(format: u32) callconv(.winapi) ?*anyopaque;
+extern "user32" fn IsClipboardFormatAvailable(format: u32) callconv(.winapi) bool;
+extern "kernel32" fn GlobalLock(mem: ?*anyopaque) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn GlobalUnlock(mem: ?*anyopaque) callconv(.winapi) bool;
+
+const cf_unicode_text: u32 = 13;
+
 const OpenFileNameW = extern struct {
     lStructSize: u32,
     hwndOwner: ?*anyopaque = null,
@@ -77,38 +86,70 @@ const Rect = rl.Rectangle;
 const logical_font_size: f32 = 16;
 const column_count: usize = 12;
 
+const layout = struct {
+    const pad: f32 = 12;
+    const title_h: f32 = 40;
+    const toolbar_h: f32 = 36;
+    const option_h: f32 = 28;
+    const status_h: f32 = 46;
+    const row_h: f32 = 30;
+    const header_h: f32 = 34;
+    const gap: f32 = 8;
+    const card_radius: f32 = 10;
+    const button_radius: f32 = 7;
+};
+
 const colors = struct {
-    const bg = Color.init(14, 17, 19, 255);
-    const panel = Color.init(22, 27, 32, 255);
-    const panel2 = Color.init(29, 35, 42, 255);
-    const border = Color.init(61, 68, 78, 255);
-    const text = Color.init(232, 237, 244, 255);
-    const muted = Color.init(145, 154, 166, 255);
-    const button = Color.init(32, 57, 86, 255);
-    const button_hover = Color.init(45, 77, 115, 255);
-    const button_down = Color.init(56, 95, 139, 255);
-    const button_disabled = Color.init(25, 31, 37, 255);
-    const accent = Color.init(74, 153, 225, 255);
-    const accent_hover = Color.init(91, 170, 239, 255);
-    const danger = Color.init(180, 48, 57, 255);
+    const bg = Color.init(10, 13, 17, 255);
+    const bg_top = Color.init(17, 22, 29, 255);
+    const panel = Color.init(17, 22, 29, 255);
+    const panel2 = Color.init(23, 30, 39, 255);
+    const elevated = Color.init(30, 39, 50, 255);
+    const border = Color.init(38, 48, 61, 255);
+    const border_strong = Color.init(58, 74, 94, 255);
+    const text = Color.init(231, 238, 246, 255);
+    const muted = Color.init(140, 152, 167, 255);
+    const faint = Color.init(98, 110, 124, 255);
+    const button = Color.init(26, 34, 44, 255);
+    const button_hover = Color.init(36, 47, 60, 255);
+    const button_down = Color.init(20, 27, 35, 255);
+    const button_disabled = Color.init(21, 26, 33, 255);
+    const accent = Color.init(62, 140, 246, 255);
+    const accent_hover = Color.init(96, 165, 255, 255);
+    const accent_down = Color.init(44, 114, 214, 255);
+    const danger = Color.init(226, 84, 84, 255);
+    const danger_hover = Color.init(244, 104, 104, 255);
+    const danger_down = Color.init(196, 62, 62, 255);
     const close_hover = Color.init(232, 17, 35, 255);
     const close_down = Color.init(196, 13, 29, 255);
-    const hash_value = Color.init(104, 211, 227, 255);
-    const success = Color.init(93, 201, 128, 255);
-    const warning = Color.init(235, 184, 82, 255);
-    const path = Color.init(174, 183, 196, 255);
-    const row_alt = Color.init(18, 22, 26, 255);
-    const row_hover = Color.init(27, 36, 45, 255);
-    const selected = Color.init(45, 91, 130, 255);
-    const input = Color.init(20, 25, 31, 255);
-    const scrollbar_track = Color.init(18, 23, 28, 255);
-    const scrollbar_thumb = Color.init(82, 94, 108, 255);
+    const hash_value = Color.init(118, 208, 226, 255);
+    const success = Color.init(64, 196, 140, 255);
+    const warning = Color.init(226, 168, 74, 255);
+    const path = Color.init(150, 163, 178, 255);
+    const row_alt = Color.init(20, 26, 33, 255);
+    const row_hover = Color.init(29, 39, 50, 255);
+    const selected = Color.init(46, 96, 148, 255);
+    const input = Color.init(14, 19, 25, 255);
+    const scrollbar_track = Color.init(255, 255, 255, 10);
+    const scrollbar_thumb = Color.init(88, 102, 118, 255);
 };
+
+const ButtonKind = enum { normal, primary, danger };
 
 const ButtonVisual = struct {
     clicked: bool,
     hovered: bool,
     pressed: bool,
+    hover_t: f32,
+    lift: f32,
+};
+
+const RowFx = struct {
+    appear: f32 = 0,
+    born: f64 = 0,
+    pulse: f32 = 0,
+    status_hash: u64 = 0,
+    seen: bool = false,
 };
 
 const ColumnDrop = struct {
@@ -170,18 +211,35 @@ const UiState = struct {
     font_loaded: bool = false,
     font_codepoints: []i32 = &.{},
     font_render_scale: f32 = 0,
-    font_text_hash: u64 = 0,
-    font_revision: u64 = 0,
+    font_codepoint_count: usize = 0,
     drawn_codepoints: std.AutoHashMap(i32, void),
     app_icon: rl.Texture2D = undefined,
     app_icon_loaded: bool = false,
     lucide_atlas: ?lucide.Atlas = null,
     render_scale: f32 = 1.0,
-    filter_column: i32 = @intFromEnum(FilterColumn.all),
+    dt: f32 = 1.0 / 60.0,
+    now: f64 = 0,
+    intro_anim: f32 = 0,
+    hover_anims: std.AutoHashMap(u64, f32),
+    row_fx: std.ArrayList(RowFx) = .empty,
+    progress_anim: f32 = 0,
+    progress_tint: Color = Color.init(62, 140, 246, 255),
+    scroll_target_x: f32 = 0,
+    scroll_target_y: f32 = 0,
+    table_body: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+    filter_anim: f32 = 0,
+    checkbox_anim: [hash.algorithm_count]f32 = @splat(0),
+    uppercase_anim: f32 = 0,
+    search_focus_anim: f32 = 0,
+    empty_anim: f32 = 0,
+    toast_start: f64 = 0,
+    toast_duration: f64 = 0,
+    filter_column: i32 = @backingInt(FilterColumn.all),
     filter_open: bool = false,
     filter_button_rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     search_buf: [512:0]u8 = @splat(0),
     search_len: usize = 0,
+    clipboard_buf: [2048]u8 = @splat(0),
     search_active: bool = false,
     dragging_title: bool = false,
     drag_mouse_start: Vec2 = .{ .x = 0, .y = 0 },
@@ -223,6 +281,7 @@ const UiState = struct {
             .io = io,
             .app = try worker.AppState.init(allocator, io),
             .drawn_codepoints = std.AutoHashMap(i32, void).init(allocator),
+            .hover_anims = std.AutoHashMap(u64, f32).init(allocator),
             .context_queue = context_queue,
         };
     }
@@ -233,6 +292,8 @@ const UiState = struct {
         if (self.font_loaded) rl.unloadFont(self.font);
         self.allocator.free(self.font_codepoints);
         self.drawn_codepoints.deinit();
+        self.hover_anims.deinit();
+        self.row_fx.deinit(self.allocator);
         self.app.deinit();
     }
 };
@@ -243,6 +304,103 @@ fn defaultColumnWidths() [12]f32 {
 
 fn defaultColumnOrder() [12]usize {
     return .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+}
+
+const ui_text_samples = [_][]const u8{
+    "Hasher",
+    "2.0",
+    "开始",
+    "停止",
+    "清空",
+    "复制",
+    "保存",
+    "复制无路径",
+    "保存无路径",
+    "重置",
+    "搜索",
+    "算法",
+    "大写",
+    "文件",
+    "大小",
+    "状态",
+    "完整路径",
+    "在计算完毕后可直接双击单元格复制",
+    "拖入文件或文件夹",
+    "或点击开始按钮计算哈希",
+    "没有匹配的结果",
+    "就绪",
+    "计算中",
+    "已复制到剪贴板",
+    "已清空",
+    "已停止",
+    "完成",
+    "排队中",
+    "等待中",
+    "错误",
+    "开启右键菜单",
+    "关闭右键菜单",
+    "右键菜单",
+};
+
+fn approach(value: f32, target: f32, speed: f32, dt: f32) f32 {
+    const amount = 1.0 - std.math.exp(-speed * dt);
+    const next = value + (target - value) * amount;
+    return if (@abs(target - next) < 0.0008) target else next;
+}
+
+fn easeOutCubic(t: f32) f32 {
+    const clamped = std.math.clamp(t, 0, 1);
+    const remaining = 1.0 - clamped;
+    return 1.0 - remaining * remaining * remaining;
+}
+
+/// Smoothly animates a widget-owned value. The id must stay stable between
+/// frames (derive it from the layout rect, not from the mouse position).
+fn anim(ui: *UiState, id: u64, target: f32, speed: f32) f32 {
+    if (ui.hover_anims.count() > 4096) ui.hover_anims.clearRetainingCapacity();
+    const entry = ui.hover_anims.getOrPut(id) catch return target;
+    if (!entry.found_existing) entry.value_ptr.* = target;
+    entry.value_ptr.* = approach(entry.value_ptr.*, target, speed, ui.dt);
+    return entry.value_ptr.*;
+}
+
+fn widgetId(salt: u64, r: Rect) u64 {
+    var hasher = std.hash.Wyhash.init(salt);
+    hasher.update(std.mem.asBytes(&r.x));
+    hasher.update(std.mem.asBytes(&r.y));
+    hasher.update(std.mem.asBytes(&r.width));
+    hasher.update(std.mem.asBytes(&r.height));
+    return hasher.final();
+}
+
+/// Radius is given in logical pixels; raylib expects a roundness factor.
+fn roundnessFor(r: Rect, radius: f32) f32 {
+    const min_side = @min(r.width, r.height);
+    if (min_side <= 0) return 0;
+    return std.math.clamp(radius * 2.0 / min_side, 0, 1);
+}
+
+fn rrect(r: Rect, radius: f32, color: Color) void {
+    if (r.width <= 0 or r.height <= 0) return;
+    if (radius <= 0.5) return rl.drawRectangleRec(r, color);
+    const segments: i32 = @intFromFloat(std.math.clamp(radius * 2.0, 4, 24));
+    rl.drawRectangleRounded(r, roundnessFor(r, radius), segments, color);
+}
+
+fn rrectLines(r: Rect, radius: f32, thick: f32, color: Color) void {
+    if (r.width <= 1 or r.height <= 1) return;
+    const segments: i32 = @intFromFloat(std.math.clamp(radius * 2.0, 4, 24));
+    rl.drawRectangleRoundedLinesEx(r, roundnessFor(r, radius), segments, thick, color);
+}
+
+fn drawShadow(r: Rect, radius: f32, strength: u8) void {
+    if (strength == 0) return;
+    rl.drawRectangleRounded(rect(r.x, r.y + 4, r.width, r.height), roundnessFor(r, radius), 12, Color.init(0, 0, 0, strength / 2));
+    rl.drawRectangleRounded(rect(r.x, r.y + 2, r.width, r.height), roundnessFor(r, radius), 12, Color.init(0, 0, 0, strength));
+}
+
+fn drawDot(center: Vec2, radius: f32, color: Color) void {
+    rl.drawCircleV(center, radius, color);
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_request: ?context_menu.ContextHashRequest, context_queue: *single_instance.RequestQueue) !void {
@@ -276,10 +434,14 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_request: ?context_m
 
     while (!rl.windowShouldClose()) {
         beginCursorFrame(&ui);
+        ui.now = rl.getTime();
+        ui.dt = std.math.clamp(rl.getFrameTime(), 1.0 / 240.0, 0.05);
+        ui.intro_anim = approach(ui.intro_anim, 1, 9, ui.dt);
         updateScale(&ui);
         updateWindowFrame(&ui);
         handleDrops(&ui);
-        ui.context_queue.startIfReady(&ui.app, rl.getTime());
+        handleShortcuts(&ui);
+        ui.context_queue.startIfReady(&ui.app, ui.now);
         handleSearchInput(&ui);
         handleWindowResize(&ui);
         handleWindowDrag(&ui);
@@ -361,25 +523,29 @@ fn beginScissor(ui: *const UiState, r: Rect) void {
 }
 
 fn loadFont(ui: *UiState) !void {
-    ui.font_text_hash = computeFontTextHash(ui);
     ui.font_codepoints = try buildFontCodepoints(ui);
     ui.font = loadFontAtlas(ui, ui.font_codepoints) catch {
         ui.font = try rl.getFontDefault();
         ui.font_render_scale = ui.render_scale;
+        ui.font_codepoint_count = ui.drawn_codepoints.count();
         return;
     };
     ui.font_loaded = true;
     ui.font_render_scale = ui.render_scale;
+    ui.font_codepoint_count = ui.drawn_codepoints.count();
 }
 
+/// Rebuilds the glyph atlas only when genuinely new codepoints appear (or the
+/// display scale changes), instead of on every row status update. Rebuilding is
+/// expensive, so tying it to text changes made the table stutter while hashing.
 fn ensureFontCurrent(ui: *UiState) !void {
-    const current_hash = computeFontTextHash(ui);
     const scale_changed = @abs(ui.font_render_scale - ui.render_scale) > 0.001;
-    if (current_hash == ui.font_text_hash and !scale_changed) return;
+    if (!scale_changed and ui.drawn_codepoints.count() == ui.font_codepoint_count) return;
     const next_codepoints = try buildFontCodepoints(ui);
     const next_font = loadFontAtlas(ui, next_codepoints) catch {
         ui.allocator.free(next_codepoints);
         ui.font_render_scale = ui.render_scale;
+        ui.font_codepoint_count = ui.drawn_codepoints.count();
         return;
     };
     if (ui.font_loaded) rl.unloadFont(ui.font);
@@ -387,31 +553,16 @@ fn ensureFontCurrent(ui: *UiState) !void {
     ui.font = next_font;
     ui.font_loaded = true;
     ui.font_codepoints = next_codepoints;
-    ui.font_text_hash = current_hash;
     ui.font_render_scale = ui.render_scale;
+    ui.font_codepoint_count = ui.drawn_codepoints.count();
 }
 
 fn loadFontAtlas(ui: *const UiState, codepoints: []const i32) !rl.Font {
     const pixel_size = @max(1, @as(i32, @intFromFloat(@ceil(pixelScale(ui, logical_font_size)))));
     const font = try font_atlas.load(embedded_assets.ttf, pixel_size, codepoints);
     if (!font.isReady()) return error.FontLoadFailed;
-    rl.setTextureFilter(font.texture, .point);
+    rl.setTextureFilter(font.texture, .bilinear);
     return font;
-}
-
-fn computeFontTextHash(ui: *UiState) u64 {
-    var hasher = std.hash.Wyhash.init(0);
-    hasher.update(std.mem.asBytes(&ui.font_revision));
-    worker.lockMutex(&ui.app.mutex);
-    defer ui.app.mutex.unlock();
-    hasher.update(ui.app.status_message);
-    hasher.update(ui.search_buf[0..ui.search_len]);
-    for (ui.app.rows.items) |row| {
-        hasher.update(row.file.name);
-        hasher.update(row.file.path);
-        hasher.update(row.status);
-    }
-    return hasher.final();
 }
 
 fn buildFontCodepoints(ui: *UiState) ![]i32 {
@@ -425,6 +576,8 @@ fn buildFontCodepoints(ui: *UiState) ![]i32 {
     try appendCodepointRange(&codepoints, &seen, 0x2000, 0x206F);
     try appendCodepointRange(&codepoints, &seen, 0x3000, 0x303F);
     try appendCodepointRange(&codepoints, &seen, 0xFF00, 0xFFEF);
+    for (ui_text_samples) |sample| try appendTextCodepoints(&codepoints, &seen, sample);
+    for (filter_labels) |label| try appendTextCodepoints(&codepoints, &seen, label);
     var drawn_it = ui.drawn_codepoints.keyIterator();
     while (drawn_it.next()) |cp| try appendCodepoint(&codepoints, &seen, cp.*);
 
@@ -454,10 +607,7 @@ fn appendTextCodepoints(codepoints: *std.ArrayList(i32), seen: *std.AutoHashMap(
 fn trackDrawnText(ui: *UiState, text: []const u8) !void {
     var view = std.unicode.Utf8View.init(text) catch return;
     var it = view.iterator();
-    while (it.nextCodepoint()) |cp| {
-        const result = try ui.drawn_codepoints.getOrPut(@intCast(cp));
-        if (!result.found_existing) ui.font_revision +%= 1;
-    }
+    while (it.nextCodepoint()) |cp| _ = try ui.drawn_codepoints.getOrPut(@intCast(cp));
 }
 
 fn appendCodepoint(codepoints: *std.ArrayList(i32), seen: *std.AutoHashMap(i32, void), cp: i32) !void {
@@ -478,7 +628,12 @@ fn handleDrops(ui: *UiState) void {
 
 fn handleSearchInput(ui: *UiState) void {
     if (!ui.search_active) return;
-    if (rl.isKeyPressed(.backspace) and ui.search_len > 0) {
+    const ctrl = rl.isKeyDown(.left_control) or rl.isKeyDown(.right_control);
+    if (ctrl and rl.isKeyPressed(.v)) {
+        appendSearchText(ui, clipboardText(ui) orelse "");
+        return;
+    }
+    if ((rl.isKeyPressed(.backspace) or rl.isKeyPressedRepeat(.backspace)) and ui.search_len > 0) {
         ui.search_len = prevUtf8Start(ui.search_buf[0..ui.search_len]);
         ui.search_buf[ui.search_len] = 0;
     }
@@ -489,6 +644,37 @@ fn handleSearchInput(ui: *UiState) void {
         ui.search_len += encodeUtf8(@intCast(cp), ui.search_buf[ui.search_len .. ui.search_buf.len - 1]) catch 0;
         ui.search_buf[ui.search_len] = 0;
     }
+}
+
+/// Appends pasted text, dropping control characters so a multi-line clipboard
+/// payload still yields a usable single-line query.
+fn appendSearchText(ui: *UiState, text: []const u8) void {
+    for (text) |byte| {
+        if (ui.search_len + 1 >= ui.search_buf.len) break;
+        if (byte == '\r' or byte == '\n' or byte == '\t') continue;
+        if (byte < 0x20) continue;
+        ui.search_buf[ui.search_len] = byte;
+        ui.search_len += 1;
+    }
+    ui.search_buf[ui.search_len] = 0;
+}
+
+fn clipboardText(ui: *UiState) ?[]const u8 {
+    if (@import("builtin").os.tag != .windows) {
+        const text = rl.getClipboardText();
+        return if (text.len == 0) null else text;
+    }
+    if (!IsClipboardFormatAvailable(cf_unicode_text)) return null;
+    if (!OpenClipboard(rl.getWindowHandle())) return null;
+    defer _ = CloseClipboard();
+    const handle = GetClipboardData(cf_unicode_text) orelse return null;
+    const raw = GlobalLock(handle) orelse return null;
+    defer _ = GlobalUnlock(handle);
+    const wide: [*:0]const u16 = @ptrCast(@alignCast(raw));
+    var wide_len: usize = 0;
+    while (wide[wide_len] != 0) wide_len += 1;
+    const written = std.unicode.utf16LeToUtf8(ui.clipboard_buf[0..], wide[0..wide_len]) catch return null;
+    return ui.clipboard_buf[0..written];
 }
 
 fn prevUtf8Start(text: []const u8) usize {
@@ -523,7 +709,7 @@ fn handleWindowDrag(ui: *UiState) void {
     if (@import("builtin").os.tag == .windows) return;
     const mouse = rl.getMousePosition();
     const screen_w: f32 = @floatFromInt(rl.getScreenWidth());
-    const in_title = mouse.y >= 0 and mouse.y <= scale(ui, 34) and mouse.x < screen_w - scale(ui, 132);
+    const in_title = mouse.y >= 0 and mouse.y <= scale(ui, layout.title_h) and mouse.x < screen_w - scale(ui, 138);
     if (resizeHitTest(ui, mouse) != null) return;
     if (@import("builtin").os.tag == .windows and in_title and rl.isMouseButtonPressed(.left)) {
         windows_frame.beginWindowDrag(rl.getWindowHandle());
@@ -608,21 +794,38 @@ fn drawFrame(ui: *UiState) void {
     const w: f32 = @floatFromInt(rl.getScreenWidth());
     const h: f32 = @floatFromInt(rl.getScreenHeight());
     ui.pointer_blocked = ui.filter_open;
-    rl.drawRectangleRec(rect(0, 0, w, h), colors.bg);
+    drawBackdrop(ui, w, h);
     drawTitleBar(ui, w);
-    const toolbar_bottom = drawToolbar(ui, w);
-    const options_bottom = drawOptions(ui, w, toolbar_bottom + scale(ui, 8));
-    const status_bottom = drawStatus(ui, w, options_bottom + scale(ui, 8));
-    drawTable(ui, w, h, status_bottom + scale(ui, 8));
-    if (ui.filter_open) drawFilterPopup(ui);
+
+    const pad = scale(ui, layout.pad);
+    const toolbar_top = scale(ui, layout.title_h) + pad * 0.75;
+    const toolbar_bottom = drawToolbar(ui, rect(pad, toolbar_top, w - pad * 2, scale(ui, layout.toolbar_h)));
+    const options_bottom = drawOptions(ui, pad, w - pad, toolbar_bottom + scale(ui, layout.gap));
+    const status_top = options_bottom + scale(ui, layout.gap);
+    const status = rect(pad, status_top, w - pad * 2, scale(ui, layout.status_h));
+    drawStatus(ui, status);
+    const table_top = status_top + status.height + scale(ui, layout.gap);
+    drawTable(ui, rect(pad, table_top, w - pad * 2, h - table_top - pad));
+    if (ui.filter_open or ui.filter_anim > 0.01) drawFilterPopup(ui);
     drawToast(ui, w, h);
+    if (ui.intro_anim < 0.999) rl.drawRectangleRec(rect(0, 0, w, h), colors.bg.alpha(1 - ui.intro_anim));
+}
+
+fn drawBackdrop(ui: *UiState, w: f32, h: f32) void {
+    _ = ui;
+    rl.drawRectangleGradientV(0, 0, @intFromFloat(w), @intFromFloat(h), colors.bg_top, colors.bg);
+    const radius = @max(w, h) * 0.62;
+    rl.drawCircleGradient(vec(w * 0.22, -h * 0.18), radius, Color.init(62, 140, 246, 26), Color.init(62, 140, 246, 0));
+    rl.drawCircleGradient(vec(w * 0.92, h * 0.02), radius * 0.7, Color.init(96, 165, 255, 14), Color.init(96, 165, 255, 0));
 }
 
 fn drawTitleBar(ui: *UiState, w: f32) void {
-    const h = scale(ui, 34);
-    rl.drawRectangleRec(rect(0, 0, w, h), colors.bg);
+    const h = scale(ui, layout.title_h);
+    rl.drawRectangleGradientV(0, 0, @intFromFloat(w), @intFromFloat(h), Color.init(23, 29, 38, 255), Color.init(15, 20, 26, 255));
+    rl.drawRectangleRec(rect(0, h - 1, w, 1), colors.border.alpha(0.9));
+
     const icon_size = scale(ui, 20);
-    const icon_x = scale(ui, 8);
+    const icon_x = scale(ui, layout.pad) + scale(ui, 2);
     const icon_y = (h - icon_size) * 0.5;
     if (ui.app_icon_loaded) {
         rl.drawTexturePro(
@@ -634,7 +837,13 @@ fn drawTitleBar(ui: *UiState, w: f32) void {
             Color.init(255, 255, 255, 255),
         );
     }
-    drawTextClipped(ui, "Hasher 1.5", rect(scale(ui, 34), scale(ui, 7), scale(ui, 180), scale(ui, 22)), colors.text);
+    const title_x = icon_x + icon_size + scale(ui, 10);
+    drawTextClipped(ui, "Hasher", rect(title_x, 0, scale(ui, 140), h), colors.text);
+    const title_w = measureText(ui, "Hasher", scale(ui, 200));
+    const badge = rect(title_x + title_w + scale(ui, 8), (h - scale(ui, 18)) * 0.5, scale(ui, 36), scale(ui, 18));
+    rrect(badge, scale(ui, 9), colors.accent.alpha(0.16));
+    drawTextCentered(ui, "2.0", badge, colors.accent_hover);
+
     const button_w = scale(ui, 46);
     var x = w - button_w * 3;
     if (titleBarButton(ui, rect(x, 0, button_w, h), .minimize)) {
@@ -654,7 +863,6 @@ fn drawTitleBar(ui: *UiState, w: f32) void {
     if (titleBarButton(ui, rect(x, 0, button_w, h), .close)) {
         if (@import("builtin").os.tag == .windows) windows_frame.close(rl.getWindowHandle()) else rl.closeWindow();
     }
-    rl.drawLine(0, @intFromFloat(h - 1), @intFromFloat(w), @intFromFloat(h - 1), colors.border);
 }
 
 fn titleBarButton(ui: *UiState, r: Rect, icon: Icon) bool {
@@ -662,92 +870,177 @@ fn titleBarButton(ui: *UiState, r: Rect, icon: Icon) bool {
     const hovered = rl.checkCollisionPointRec(mouse, r);
     const pressed = hovered and rl.isMouseButtonDown(.left);
     const is_close = icon == .close;
-    const background = if (is_close)
-        if (pressed) colors.close_down else if (hovered) colors.close_hover else colors.bg
-    else if (pressed)
-        colors.button_down
-    else if (hovered)
-        colors.panel2
+    const hover_t = anim(ui, widgetId(if (is_close) 0x9c10 else 0x9c11, r), if (hovered) 1 else 0, 20);
+    const target = if (is_close)
+        (if (pressed) colors.close_down else colors.close_hover)
     else
-        colors.bg;
-    rl.drawRectangleRec(r, background);
+        (if (pressed) colors.button_down else colors.elevated);
+    rl.drawRectangleRec(r, rl.colorLerp(Color.init(target.r, target.g, target.b, 0), target, hover_t));
 
     const icon_size = scale(ui, 14);
+    const nudge = if (pressed) scale(ui, 0.6) else 0;
     const icon_rect = rect(
         snapToPhysicalPixel(ui, r.x + (r.width - icon_size) * 0.5),
-        snapToPhysicalPixel(ui, r.y + (r.height - icon_size) * 0.5),
+        snapToPhysicalPixel(ui, r.y + (r.height - icon_size) * 0.5 + nudge),
         icon_size,
         icon_size,
     );
-    drawIcon(ui, icon, icon_rect, if (is_close and hovered) Color.init(255, 255, 255, 255) else colors.muted);
+    const icon_color = rl.colorLerp(colors.muted, if (is_close) Color.init(255, 255, 255, 255) else colors.text, hover_t);
+    drawIcon(ui, icon, icon_rect, icon_color);
     return hovered and rl.isMouseButtonReleased(.left);
 }
 
-fn drawToolbar(ui: *UiState, w: f32) f32 {
+fn buttonWidth(ui: *UiState, label: []const u8, min_width: f32) f32 {
+    return @max(scale(ui, min_width), measureText(ui, label, scale(ui, 420)) + scale(ui, 46));
+}
+
+fn flowDivider(ui: *UiState, flow: *FlowLayout) void {
+    const height = flow.item_height * 0.62;
+    const x = flow.x + scale(ui, 3);
+    rl.drawRectangleRec(rect(x, flow.y + (flow.item_height - height) * 0.5, 1, height), colors.border);
+    flow.x += scale(ui, 12);
+}
+
+fn drawToolbar(ui: *UiState, area: Rect) f32 {
     worker.lockMutex(&ui.app.mutex);
     const processing = ui.app.processing;
     ui.app.mutex.unlock();
 
-    var flow = FlowLayout.init(scale(ui, 6), scale(ui, 42), w - scale(ui, 6), scale(ui, 30), scale(ui, 6), scale(ui, 6));
-    if (toolButtonState(ui, flow.next(scale(ui, 72)), .play, "开始", !processing, false)) ui.app.start() catch {};
-    if (toolButtonState(ui, flow.next(scale(ui, 72)), .stop, "停止", processing, processing)) ui.app.stop();
-    if (toolButton(ui, flow.next(scale(ui, 72)), .clear, "清空")) ui.app.clear();
-    if (toolButton(ui, flow.next(scale(ui, 74)), .copy, "复制")) copyRows(ui, true) catch {};
-    if (toolButton(ui, flow.next(scale(ui, 74)), .save, "保存")) saveRows(ui, true) catch {};
-    if (toolButton(ui, flow.next(scale(ui, 124)), .copy_no_path, "复制无路径")) copyRows(ui, false) catch {};
-    if (toolButton(ui, flow.next(scale(ui, 124)), .save_no_path, "保存无路径")) saveRows(ui, false) catch {};
-    const filter_rect = flow.next(scale(ui, 128));
+    const gap = scale(ui, 6);
+    const row_h = scale(ui, 30);
+    const filter_w = scale(ui, 108);
+    const search_w = scale(ui, 214);
+    const reset_w = scale(ui, 38);
+    var right_x = area.x + area.width - (filter_w + search_w + reset_w + gap * 2);
+    const filter_rect = rect(right_x, area.y, filter_w, row_h);
+    right_x += filter_w + gap;
+    const search_rect = rect(right_x, area.y, search_w, row_h);
+    right_x += search_w + gap;
+    const reset_rect = rect(right_x, area.y, reset_w, row_h);
+
+    var flow = FlowLayout.init(area.x + scale(ui, 2), area.y, filter_rect.x - scale(ui, 10), row_h, gap, gap);
+    if (toolButtonEx(ui, flow.next(buttonWidth(ui, "开始", 74)), .play, "开始", .primary, !processing, false)) ui.app.start() catch {};
+    if (toolButtonEx(ui, flow.next(buttonWidth(ui, "停止", 74)), .stop, "停止", .danger, processing, processing)) ui.app.stop();
+    if (toolButtonEx(ui, flow.next(buttonWidth(ui, "清空", 74)), .clear, "清空", .normal, !processing, false)) ui.app.clear();
+    flowDivider(ui, &flow);
+    if (toolButtonEx(ui, flow.next(buttonWidth(ui, "复制", 72)), .copy, "复制", .normal, true, false)) copyRows(ui, true) catch {};
+    if (toolButtonEx(ui, flow.next(buttonWidth(ui, "保存", 72)), .save, "保存", .normal, true, false)) saveRows(ui, true) catch {};
+    if (toolButtonEx(ui, flow.next(buttonWidth(ui, "复制无路径", 108)), .copy_no_path, "复制无路径", .normal, true, false)) copyRows(ui, false) catch {};
+    if (toolButtonEx(ui, flow.next(buttonWidth(ui, "保存无路径", 108)), .save_no_path, "保存无路径", .normal, true, false)) saveRows(ui, false) catch {};
+
     ui.filter_button_rect = filter_rect;
     if (filterButton(ui, filter_rect)) ui.filter_open = !ui.filter_open;
-    drawSearch(ui, flow.next(scale(ui, 270)));
-    if (toolButton(ui, flow.next(scale(ui, 72)), .reset, "重置")) {
+    drawSearch(ui, search_rect);
+    if (toolButtonEx(ui, reset_rect, .reset, "", .normal, true, false)) {
         @memset(&ui.search_buf, 0);
         ui.search_len = 0;
     }
-    return flow.bottom();
+    return @max(flow.bottom(), area.y + row_h);
 }
 
-fn drawOptions(ui: *UiState, screen_w: f32, start_y: f32) f32 {
+fn drawOptions(ui: *UiState, left: f32, right: f32, start_y: f32) f32 {
+    const row_h = scale(ui, layout.option_h);
+    const gap = scale(ui, 6);
+
+    var right_cursor = right;
+    const settings_label = if (ui.context_menu_enabled) "关闭右键菜单" else "开启右键菜单";
+    const settings_w = buttonWidth(ui, settings_label, 112);
+    const settings_rect = rect(right_cursor - settings_w, start_y, settings_w, row_h);
+    right_cursor -= settings_w + gap;
+    const upper_w = scale(ui, 68);
+    const upper_rect = rect(right_cursor - upper_w, start_y, upper_w, row_h);
+    right_cursor -= upper_w;
+
     worker.lockMutex(&ui.app.mutex);
-    const row_h = scale(ui, 24);
-    var flow = FlowLayout.init(scale(ui, 6), start_y, screen_w - scale(ui, 6), row_h, scale(ui, 4), scale(ui, 2));
+    var flow = FlowLayout.init(left, start_y, right_cursor - scale(ui, 10), row_h, gap, scale(ui, 4));
     for (hash.all_algorithms) |algorithm| {
-        const wide: f32 = if (algorithm == .crc64_iso or algorithm == .crc64_ecma) 116 else 78;
-        const sw = scale(ui, wide);
-        var enabled = ui.app.options.enabled(algorithm);
-        if (checkbox(ui, flow.next(sw), algorithmLabelZ(algorithm), &enabled)) {
-            ui.app.options.set(algorithm, enabled);
+        const label = algorithmLabelZ(algorithm);
+        const index = @backingInt(algorithm);
+        const chip_w = @max(scale(ui, 62), measureText(ui, label, scale(ui, 300)) + scale(ui, 42));
+        const chip = flow.next(chip_w);
+        const target: f32 = if (ui.app.options.enabled(algorithm)) 1 else 0;
+        ui.checkbox_anim[index] = approach(ui.checkbox_anim[index], target, 16, ui.dt);
+        if (optionChip(ui, chip, label, ui.checkbox_anim[index])) {
+            ui.app.options.set(algorithm, !ui.app.options.enabled(algorithm));
         }
     }
-    _ = checkbox(ui, flow.next(scale(ui, 70)), "大写", &ui.app.uppercase);
-    const menu_button_w = scale(ui, 138);
-    const configure_context_menu = toolButton(ui, flow.next(menu_button_w), .settings, if (ui.context_menu_enabled) "关闭右键菜单" else "开启右键菜单");
+    const uppercase_target: f32 = if (ui.app.uppercase) 1 else 0;
+    ui.uppercase_anim = approach(ui.uppercase_anim, uppercase_target, 16, ui.dt);
+    if (optionChip(ui, upper_rect, "大写", ui.uppercase_anim)) ui.app.uppercase = !ui.app.uppercase;
+    const context_enabled = ui.context_menu_enabled;
     ui.app.mutex.unlock();
-    if (configure_context_menu) configureContextMenu(ui);
+
+    const settings_toggle = if (context_enabled) "关闭右键菜单" else "开启右键菜单";
+    if (toolButtonEx(ui, settings_rect, .settings, settings_toggle, .normal, true, context_enabled)) configureContextMenu(ui);
     return flow.bottom();
 }
 
-fn drawStatus(ui: *UiState, w: f32, y: f32) f32 {
-    var buf: [160]u8 = undefined;
+fn drawStatus(ui: *UiState, area: Rect) void {
+    var message_buf: [160]u8 = undefined;
+    var count_buf: [64]u8 = undefined;
     worker.lockMutex(&ui.app.mutex);
     const done = ui.app.progress_done;
     const total = ui.app.progress_total;
     const processing = ui.app.processing;
-    const status_message = ui.app.status_message;
-    const text = std.fmt.bufPrint(&buf, "{s} {d}/{d}{s}", .{ status_message, done, total, if (processing) " ..." else "" }) catch "状态不可用";
-    const progress_color = progressColor(status_message, processing, done, total);
+    const message = copyTruncated(&message_buf, ui.app.status_message);
     ui.app.mutex.unlock();
 
-    const pct: f32 = if (total == 0) 0 else @as(f32, @floatFromInt(done)) / @as(f32, @floatFromInt(total));
-    const displayed_pct: f32 = if (pct == 0 and (progress_color.r == colors.danger.r or progress_color.r == colors.warning.r)) 1 else pct;
-    const status_w = @min(measureText(ui, text, w) + scale(ui, 4), @max(scale(ui, 100), w - scale(ui, 180)));
-    drawTextClipped(ui, text, rect(scale(ui, 6), y + scale(ui, 2), status_w, scale(ui, 20)), colors.text);
-    const progress_x = scale(ui, 6) + status_w + scale(ui, 10);
-    const progress = rect(progress_x, y + scale(ui, 2), @max(scale(ui, 150), w - progress_x - scale(ui, 6)), scale(ui, 20));
-    rl.drawRectangleRounded(progress, 0.22, 6, colors.panel2);
-    rl.drawRectangleRounded(rect(progress.x, progress.y, progress.width * displayed_pct, progress.height), 0.22, 6, progress_color.alpha(if (pct == 0) 0.34 else 0.72));
-    rl.drawRectangleRoundedLinesEx(progress, 0.22, 6, 1, colors.border);
-    return y + scale(ui, 24);
+    const color = progressColor(message, processing, done, total);
+    const ratio: f32 = if (total == 0) 0 else @as(f32, @floatFromInt(@min(done, total))) / @as(f32, @floatFromInt(total));
+    ui.progress_anim = approach(ui.progress_anim, ratio, 7, ui.dt);
+    ui.progress_tint = rl.colorLerp(ui.progress_tint, color, 1.0 - std.math.exp(-10.0 * ui.dt));
+
+    drawShadow(area, scale(ui, layout.card_radius), 56);
+    rrect(area, scale(ui, layout.card_radius), colors.panel);
+    rrectLines(area, scale(ui, layout.card_radius), 1, colors.border);
+
+    const pulse: f32 = if (processing) 1.0 + 0.35 * @sin(@as(f32, @floatCast(ui.now)) * 5.0) else 1.0;
+    const dot_center = vec(area.x + scale(ui, 17), area.y + scale(ui, 17));
+    if (processing) drawDot(dot_center, scale(ui, 9) * pulse, ui.progress_tint.alpha(0.14));
+    drawDot(dot_center, scale(ui, 3.6), ui.progress_tint);
+    drawTextClipped(ui, message, rect(dot_center.x + scale(ui, 11), area.y + scale(ui, 5), @max(scale(ui, 80), area.width * 0.5), scale(ui, 22)), colors.text);
+
+    const percent = @round(ui.progress_anim * 100.0);
+    const counts = std.fmt.bufPrint(&count_buf, "{d} / {d}  ·  {d:.0}%", .{ done, total, percent }) catch "";
+    const counts_w = measureText(ui, counts, scale(ui, 260));
+    drawTextClipped(ui, counts, rect(area.x + area.width - counts_w - scale(ui, 14), area.y + scale(ui, 5), counts_w + scale(ui, 2), scale(ui, 22)), colors.muted);
+
+    const bar = rect(area.x + scale(ui, 14), area.y + area.height - scale(ui, 15), area.width - scale(ui, 28), scale(ui, 6));
+    rrect(bar, scale(ui, 3), Color.init(255, 255, 255, 16));
+    const fill_w = bar.width * std.math.clamp(ui.progress_anim, 0, 1);
+    if (fill_w > 0.5) {
+        const fill = rect(bar.x, bar.y, fill_w, bar.height);
+        rrect(fill, scale(ui, 3), ui.progress_tint);
+        rl.drawRectangleRec(rect(fill.x + scale(ui, 2), fill.y + 1, @max(0, fill.width - scale(ui, 4)), 1), Color.init(255, 255, 255, 46));
+        if (processing) drawShimmer(ui, fill);
+    }
+}
+
+fn drawShimmer(ui: *UiState, fill: Rect) void {
+    const band_w = @max(scale(ui, 70), fill.width * 0.22);
+    const cycle = 1.7;
+    const phase = @mod(@as(f32, @floatCast(ui.now)), cycle) / cycle;
+    const x = fill.x - band_w + (fill.width + band_w) * phase;
+    const half = band_w * 0.5;
+    beginScissor(ui, fill);
+    defer rl.endScissorMode();
+    const soft = Color.init(255, 255, 255, 58);
+    const clear = Color.init(255, 255, 255, 0);
+    const y: i32 = @intFromFloat(fill.y);
+    const h: i32 = @intFromFloat(fill.height);
+    rl.drawRectangleGradientH(@intFromFloat(x), y, @intFromFloat(half), h, clear, soft);
+    rl.drawRectangleGradientH(@intFromFloat(x + half), y, @intFromFloat(half), h, soft, clear);
+}
+
+fn copyTruncated(buf: []u8, text: []const u8) []const u8 {
+    if (text.len <= buf.len) {
+        @memcpy(buf[0..text.len], text);
+        return buf[0..text.len];
+    }
+    var len = buf.len;
+    while (len > 0 and (text[len] & 0b1100_0000) == 0b1000_0000) len -= 1;
+    @memcpy(buf[0..len], text[0..len]);
+    return buf[0..len];
 }
 
 fn progressColor(status: []const u8, processing: bool, done: usize, total: usize) Color {
@@ -757,65 +1050,155 @@ fn progressColor(status: []const u8, processing: bool, done: usize, total: usize
     return colors.accent;
 }
 
-fn drawTable(ui: *UiState, w: f32, h: f32, top: f32) void {
-    const margin = scale(ui, 6);
-    const scrollbar_size = scale(ui, 12);
-    const bottom = h - margin;
-    const row_h = scale(ui, 28);
-    const header_h = scale(ui, 28);
-    const vscroll_w = scrollbar_size;
-    const table_w = w - scale(ui, 12);
-    const table_x = scale(ui, 6);
-    const table_h = bottom - top;
+fn drawTable(ui: *UiState, area: Rect) void {
+    const scrollbar_size = scale(ui, 10);
+    const row_h = scale(ui, layout.row_h);
+    const header_h = scale(ui, layout.header_h);
     worker.lockMutex(&ui.app.mutex);
     defer ui.app.mutex.unlock();
 
-    const content_w = totalTableWidth(ui, ui.app.options, table_w);
+    const body = rect(area.x, area.y + header_h, area.width, area.height - header_h - scrollbar_size);
+    ui.table_body = body;
+
     var visible_count: usize = 0;
     for (ui.app.rows.items) |row| {
         if (rowMatches(ui, row)) visible_count += 1;
     }
     const content_h = @as(f32, @floatFromInt(visible_count)) * row_h;
+    const has_vertical = content_h > body.height + 0.5;
+    const viewport_w = area.width - (if (has_vertical) scrollbar_size else 0);
+    const content_w = totalTableWidth(ui, ui.app.options, viewport_w);
+    syncRowEffects(ui);
 
-    rl.drawRectangleRounded(rect(table_x, top, table_w, table_h), 0.018, 8, colors.panel);
-    rl.drawRectangleRoundedLinesEx(rect(table_x, top, table_w, table_h), 0.018, 8, 1, colors.border);
-    const body = rect(table_x, top + header_h, table_w, table_h - header_h - scrollbar_size);
-    handleTableScroll(ui, body, content_w, content_h);
-    {
+    drawShadow(area, scale(ui, layout.card_radius), 64);
+    rrect(area, scale(ui, layout.card_radius), colors.panel);
+    handleTableScroll(ui, rect(body.x, body.y, viewport_w, body.height), content_w, content_h);
+
+    if (visible_count == 0) {
+        drawTableEmpty(ui, body);
+    } else {
+        ui.empty_anim = 0;
         beginScissor(ui, body);
         defer rl.endScissorMode();
         var visible_index: usize = 0;
-        for (ui.app.rows.items) |row| {
+        for (ui.app.rows.items, 0..) |row, row_index| {
             if (!rowMatches(ui, row)) continue;
             const row_y = body.y + @as(f32, @floatFromInt(visible_index)) * row_h - ui.table_scroll_y;
-            if (row_y + row_h >= body.y and row_y <= body.y + body.height) drawRow(ui, row, table_x - ui.table_scroll_x, row_y, row_h, visible_index, ui.app.options);
+            if (row_y + row_h >= body.y - row_h and row_y <= body.y + body.height) {
+                drawRow(ui, row, area.x - ui.table_scroll_x, row_y, row_h, visible_index, row_index, ui.app.options, viewport_w);
+            }
             visible_index += 1;
         }
     }
 
-    drawTableHeader(ui, table_x, top, table_w, header_h, ui.app.options);
-    drawHorizontalScroll(ui, rect(table_x, bottom - scrollbar_size, table_w, scrollbar_size), content_w);
-    drawVerticalScroll(ui, rect(table_x + table_w - vscroll_w, body.y, vscroll_w, body.height), content_h);
+    drawTableHeader(ui, area.x, area.y, area.width, header_h, ui.app.options, viewport_w);
+    if (content_w > viewport_w + 0.5) {
+        const fade_w = scale(ui, 28);
+        beginScissor(ui, body);
+        defer rl.endScissorMode();
+        if (ui.table_scroll_x > 0.5) {
+            rl.drawRectangleGradientH(@intFromFloat(body.x), @intFromFloat(body.y), @intFromFloat(fade_w), @intFromFloat(body.height), colors.panel.alpha(0.92), colors.panel.alpha(0));
+        }
+        if (ui.table_scroll_x < content_w - viewport_w - 0.5) {
+            rl.drawRectangleGradientH(@intFromFloat(body.x + body.width - fade_w), @intFromFloat(body.y), @intFromFloat(fade_w), @intFromFloat(body.height), colors.panel.alpha(0), colors.panel.alpha(0.92));
+        }
+    }
+    const hbar_w = area.width - (if (has_vertical) scrollbar_size else 0);
+    drawHorizontalScroll(ui, rect(area.x, area.y + area.height - scrollbar_size, hbar_w, scrollbar_size), content_w, viewport_w);
+    drawVerticalScroll(ui, rect(area.x + area.width - scrollbar_size, body.y, scrollbar_size, body.height), content_h);
+    rrectLines(area, scale(ui, layout.card_radius), 1, colors.border);
+}
+
+fn hashText(text: []const u8) u64 {
+    return std.hash.Wyhash.hash(0x5eed, text);
+}
+
+/// Keeps the per-row animation state in sync with the worker's row list:
+/// newly added rows get a staggered entrance, completed rows get one pulse.
+fn syncRowEffects(ui: *UiState) void {
+    const rows = ui.app.rows.items;
+    if (ui.row_fx.items.len > rows.len) {
+        ui.row_fx.shrinkRetainingCapacity(rows.len);
+        if (rows.len == 0) {
+            ui.selected_row = null;
+            ui.selected_column = null;
+            ui.scroll_target_x = 0;
+            ui.scroll_target_y = 0;
+            ui.empty_anim = 0;
+        }
+    } else if (ui.row_fx.items.len < rows.len) {
+        const previous_len = ui.row_fx.items.len;
+        var index = previous_len;
+        while (index < rows.len) : (index += 1) {
+            const stagger = @min(index - previous_len, 22);
+            const delay = @as(f64, @floatFromInt(stagger)) * 0.016;
+            ui.row_fx.append(ui.allocator, .{ .born = ui.now + delay }) catch return;
+        }
+    }
+
+    for (rows, 0..) |row, index| {
+        if (index >= ui.row_fx.items.len) break;
+        const fx = &ui.row_fx.items[index];
+        const target: f32 = if (ui.now >= fx.born) 1 else 0;
+        fx.appear = approach(fx.appear, target, 13, ui.dt);
+        fx.pulse = approach(fx.pulse, 0, 4.2, ui.dt);
+        const digest = hashText(row.status);
+        if (!fx.seen) {
+            fx.seen = true;
+            fx.status_hash = digest;
+        } else if (digest != fx.status_hash) {
+            fx.status_hash = digest;
+            if (std.mem.eql(u8, row.status, "完成") or std.mem.indexOf(u8, row.status, "错误") != null) fx.pulse = 1;
+        }
+    }
+}
+
+fn drawTableEmpty(ui: *UiState, body: Rect) void {
+    ui.empty_anim = approach(ui.empty_anim, 1, 8, ui.dt);
+    const pulse = 0.5 + 0.5 * @sin(@as(f32, @floatCast(ui.now)) * 1.6);
+    const has_filter = ui.search_len > 0 or ui.filter_column != @backingInt(FilterColumn.all);
+    const title = if (has_filter) "没有匹配的结果" else "拖入文件或文件夹";
+    const hint = if (has_filter) "试试清空搜索条件或切换筛选列" else "或点击开始按钮计算哈希";
+    const center = vec(body.x + body.width * 0.5, body.y + body.height * 0.46);
+    const ring = scale(ui, 42);
+    rl.drawCircleV(center, ring + scale(ui, 10) * pulse, Color.init(62, 140, 246, 8));
+    rl.drawCircleV(center, ring, Color.init(62, 140, 246, 16));
+    rl.drawRing(center, ring - scale(ui, 0.8), ring + scale(ui, 0.8), 0, 360, 64, colors.accent.alpha(0.30 + 0.16 * pulse));
+    rl.drawLineEx(vec(center.x - scale(ui, 11), center.y), vec(center.x + scale(ui, 11), center.y), scale(ui, 2), colors.accent.alpha(0.85));
+    rl.drawLineEx(vec(center.x, center.y - scale(ui, 11)), vec(center.x, center.y + scale(ui, 11)), scale(ui, 2), colors.accent.alpha(0.85));
+
+    const title_w = measureText(ui, title, body.width * 0.8);
+    drawTextCentered(ui, title, rect(center.x - title_w * 0.5, center.y + ring + scale(ui, 16), title_w + scale(ui, 2), scale(ui, 24)), colors.text.alpha(ui.empty_anim));
+    const hint_w = measureText(ui, hint, body.width * 0.8);
+    drawTextCentered(ui, hint, rect(center.x - hint_w * 0.5, center.y + ring + scale(ui, 44), hint_w + scale(ui, 2), scale(ui, 20)), colors.faint.alpha(ui.empty_anim));
 }
 
 fn handleTableScroll(ui: *UiState, area: Rect, content_w: f32, content_h: f32) void {
-    if (rl.checkCollisionPointRec(rl.getMousePosition(), area)) {
+    const max_x = @max(0, content_w - area.width);
+    const max_y = @max(0, content_h - area.height);
+    if (!ui.pointer_blocked and rl.checkCollisionPointRec(rl.getMousePosition(), area)) {
         const wheel = rl.getMouseWheelMoveV();
         if (wheel.y != 0) {
             if (rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift)) {
-                ui.table_scroll_x -= wheel.y * scale(ui, 42);
+                ui.scroll_target_x -= wheel.y * scale(ui, 68);
             } else {
-                ui.table_scroll_y -= wheel.y * scale(ui, 42);
+                ui.scroll_target_y -= wheel.y * scale(ui, 68);
             }
         }
     }
-    ui.table_scroll_x = std.math.clamp(ui.table_scroll_x, 0, @max(0, content_w - area.width));
-    ui.table_scroll_y = std.math.clamp(ui.table_scroll_y, 0, @max(0, content_h - area.height));
+    ui.scroll_target_x = std.math.clamp(ui.scroll_target_x, 0, max_x);
+    ui.scroll_target_y = std.math.clamp(ui.scroll_target_y, 0, max_y);
+    ui.table_scroll_x = approach(ui.table_scroll_x, ui.scroll_target_x, 20, ui.dt);
+    ui.table_scroll_y = approach(ui.table_scroll_y, ui.scroll_target_y, 20, ui.dt);
+    if (@abs(ui.table_scroll_x - ui.scroll_target_x) < 0.4) ui.table_scroll_x = ui.scroll_target_x;
+    if (@abs(ui.table_scroll_y - ui.scroll_target_y) < 0.4) ui.table_scroll_y = ui.scroll_target_y;
 }
 
-fn drawTableHeader(ui: *UiState, x: f32, y: f32, width: f32, h: f32, options: hash.HashOptions) void {
-    rl.drawRectangleRounded(rect(x, y, width, h), 0.10, 6, colors.panel2);
-    rl.drawLine(@intFromFloat(x), @intFromFloat(y + h - 1), @intFromFloat(x + width), @intFromFloat(y + h - 1), colors.border);
+fn drawTableHeader(ui: *UiState, x: f32, y: f32, width: f32, h: f32, options: hash.HashOptions, layout_w: f32) void {
+    const radius = scale(ui, layout.card_radius);
+    rrect(rect(x, y, width, h), radius, colors.panel2);
+    rl.drawRectangleRec(rect(x, y + h - radius * 0.5, width, radius * 0.5), colors.panel2);
+    rl.drawRectangleRec(rect(x, y + h - 1, width, 1), colors.border);
 
     if (!rl.isMouseButtonDown(.left)) {
         ui.resizing_column = null;
@@ -828,7 +1211,7 @@ fn drawTableHeader(ui: *UiState, x: f32, y: f32, width: f32, h: f32, options: ha
     var pending_drop: ?ColumnDrop = null;
     for (ui.column_order) |column| {
         if (!isColumnVisible(options, column)) continue;
-        const sw = columnWidth(ui, options, column, width);
+        const sw = columnWidth(ui, options, column, layout_w);
         if (pushHeaderWidth(ui, &col_x, y, h, column, columnLabel(column), sw)) |drop| {
             pending_drop = drop;
         }
@@ -843,7 +1226,7 @@ fn pushHeaderWidth(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, text: [
     const right = x.* + sw;
     const mouse = rl.getMousePosition();
     const header = rect(x.*, y, sw, h);
-    const grip = rect(right - scale(ui, 4), y, scale(ui, 8), h);
+    const grip = rect(right - scale(ui, 5), y, scale(ui, 10), h);
     const hovered = !ui.pointer_blocked and rl.checkCollisionPointRec(mouse, header);
     const over_grip = hovered and rl.checkCollisionPointRec(mouse, grip);
     var drop: ?ColumnDrop = null;
@@ -875,54 +1258,77 @@ fn pushHeaderWidth(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, text: [
         requestCursor(ui, if (over_grip) .resize_ew else .pointing_hand);
     }
 
-    if (ui.dragging_column == column and hovered and rl.isMouseButtonDown(.left)) {
-        requestCursor(ui, .resize_all);
+    const hover_t = anim(ui, widgetId(0x4ea1 + column, header), if (hovered and ui.dragging_column == null and ui.resizing_column == null) 1 else 0, 18);
+    if (hover_t > 0.01) rl.drawRectangleRec(header, colors.elevated.alpha(0.55 * hover_t));
+    if (ui.dragging_column == column) {
+        rl.drawRectangleRec(header, colors.accent.alpha(0.16));
+        rl.drawRectangleLinesEx(rect(header.x + 1, header.y + 2, header.width - 2, header.height - 4), 1, colors.accent.alpha(0.7));
     }
 
-    if (ui.dragging_column == column) rl.drawRectangleRec(header, colors.selected.alpha(0.45));
-    rl.drawLine(@intFromFloat(right), @intFromFloat(y), @intFromFloat(right), @intFromFloat(y + h), colors.border);
-    drawTextClipped(ui, text, rect(x.* + scale(ui, 6), y + scale(ui, 5), sw - scale(ui, 12), h - scale(ui, 8)), colors.text);
+    const grip_t = anim(ui, widgetId(0x4ea2 + column, grip), if (over_grip) 1 else 0, 22);
+    const grip_color = rl.colorLerp(colors.border, colors.accent, grip_t);
+    rl.drawRectangleRec(rect(right - 1, y + scale(ui, 5), 1, h - scale(ui, 10)), grip_color);
+    if (grip_t > 0.02) rl.drawRectangleRec(rect(right - scale(ui, 1) - scale(ui, 1), y + scale(ui, 5), scale(ui, 2), h - scale(ui, 10)), colors.accent.alpha(grip_t));
+
+    const label_color = rl.colorLerp(colors.muted, colors.text, @max(hover_t, grip_t));
+    drawTextClipped(ui, text, rect(x.* + scale(ui, 10), y + scale(ui, 6), sw - scale(ui, 18), h - scale(ui, 10)), label_color);
     x.* += sw;
     return drop;
 }
 
-fn drawRow(ui: *UiState, row: worker.Row, x: f32, y: f32, h: f32, index: usize, options: hash.HashOptions) void {
-    const row_rect = rect(scale(ui, 6), y, @as(f32, @floatFromInt(rl.getScreenWidth())) - scale(ui, 12), h);
-    const hovered = rl.checkCollisionPointRec(rl.getMousePosition(), row_rect);
-    const bg = if (hovered) colors.row_hover else if (index % 2 == 0) colors.bg else colors.row_alt;
+fn drawRow(ui: *UiState, row: worker.Row, x: f32, y: f32, h: f32, visible_index: usize, row_index: usize, options: hash.HashOptions, viewport_w: f32) void {
+    var appear: f32 = 1;
+    var pulse: f32 = 0;
+    if (row_index < ui.row_fx.items.len) {
+        appear = easeOutCubic(ui.row_fx.items[row_index].appear);
+        pulse = ui.row_fx.items[row_index].pulse;
+    }
+    const slide = (1 - appear) * scale(ui, 9);
+    const draw_y = y + slide;
+    const row_rect = rect(ui.table_body.x, draw_y, ui.table_body.width, h);
+    const hovered = !ui.pointer_blocked and rl.checkCollisionPointRec(rl.getMousePosition(), row_rect) and !ui.dragging_vscroll and !ui.dragging_hscroll;
+    const hover_t = anim(ui, 0x70b0_0000 + @as(u64, row_index), if (hovered) 1 else 0, 20);
+
+    var bg = if (visible_index % 2 == 0) colors.panel else colors.row_alt;
+    bg = rl.colorLerp(bg, colors.row_hover, hover_t);
     rl.drawRectangleRec(row_rect, bg);
-    if (hovered) rl.drawLine(@intFromFloat(row_rect.x), @intFromFloat(y + h - 1), @intFromFloat(row_rect.x + row_rect.width), @intFromFloat(y + h - 1), colors.accent.alpha(0.35));
+    if (hover_t > 0.02) rl.drawRectangleRec(rect(row_rect.x, draw_y, scale(ui, 2), h), colors.accent.alpha(0.75 * hover_t));
+    if (pulse > 0.01) rl.drawRectangleRec(row_rect, colors.accent.alpha(0.13 * pulse));
+    if (appear < 0.99) rl.drawRectangleRec(row_rect, Color.init(255, 255, 255, @intFromFloat(26.0 * (1 - appear))));
+    rl.drawRectangleRec(rect(row_rect.x, draw_y + h - 1, row_rect.width, 1), colors.border.alpha(0.35));
+
     var col_x = x;
-    const viewport_w: f32 = @floatFromInt(rl.getScreenWidth());
     for (ui.column_order) |column| {
         if (!isColumnVisible(options, column)) continue;
         switch (column) {
-            0 => pushCellColored(ui, &col_x, y, h, column, index, row.file.name, colors.text),
-            1 => pushCellColored(ui, &col_x, y, h, column, index, row.file.size_label, colors.muted),
-            10 => pushCellColored(ui, &col_x, y, h, column, index, row.status, statusColor(row.status)),
-            11 => pushCellWidthColored(ui, &col_x, y, h, column, index, row.file.path, columnWidth(ui, options, column, viewport_w - scale(ui, 12)), colors.path),
+            0 => pushCellColored(ui, &col_x, draw_y, h, column, row_index, row.file.name, colors.text, false),
+            1 => pushCellColored(ui, &col_x, draw_y, h, column, row_index, sizeDisplay(row.file.size_label), colors.muted, false),
+            10 => pushCellColored(ui, &col_x, draw_y, h, column, row_index, row.status, statusColor(row.status), true),
+            11 => pushCellWidthColored(ui, &col_x, draw_y, h, column, row_index, row.file.path, columnWidth(ui, options, column, viewport_w), colors.path, false),
             else => {
-                const algorithm: hash.Algorithm = @enumFromInt(column - 2);
-                pushHashCell(ui, &col_x, y, h, column, index, row.result.get(algorithm));
+                const algorithm: hash.Algorithm = @fromBackingInt(@intCast(column - 2));
+                pushHashCell(ui, &col_x, draw_y, h, column, row_index, row.result.get(algorithm));
             },
         }
     }
 }
 
-fn pushCell(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8) void {
-    pushCellColored(ui, x, y, h, column, row, text, colors.text);
+fn sizeDisplay(label: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, label, " (")) |cut| return label[0..cut];
+    return label;
 }
 
-fn pushCellColored(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8, color: Color) void {
-    pushCellWidthColored(ui, x, y, h, column, row, text, scale(ui, ui.column_widths[column]), color);
+fn pushCellColored(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8, color: Color, pill: bool) void {
+    pushCellWidthColored(ui, x, y, h, column, row, text, scale(ui, ui.column_widths[column]), color, pill);
 }
 
-fn pushCellWidthColored(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8, sw: f32, color: Color) void {
+fn pushCellWidthColored(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8, sw: f32, color: Color, pill: bool) void {
     const cell = rect(x.*, y, sw, h);
     const selected = ui.selected_row == row and ui.selected_column == column;
     if (selected) {
-        rl.drawRectangleRec(cell, colors.selected.alpha(0.72));
-        rl.drawRectangleLinesEx(rect(cell.x + 1, cell.y + 1, cell.width - 2, cell.height - 2), 1, colors.accent);
+        rl.drawRectangleRec(cell, colors.selected.alpha(0.42));
+        rl.drawRectangleLinesEx(rect(cell.x, cell.y + 1, cell.width, cell.height - 2), 1, colors.accent);
+        rl.drawRectangleLinesEx(rect(cell.x + 1, cell.y + 2, cell.width - 2, cell.height - 4), 1, colors.accent.alpha(0.28));
     }
     const mouse = rl.getMousePosition();
     if (!ui.pointer_blocked and rl.checkCollisionPointRec(mouse, cell) and rl.isMouseButtonReleased(.left) and ui.resizing_column == null) {
@@ -934,7 +1340,7 @@ fn pushCellWidthColored(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, ro
         ui.last_cell_click_row = row;
         ui.last_cell_click_column = column;
         if (double_click) {
-            const ztext = ui.allocator.dupeZ(u8, text) catch null;
+            const ztext = ui.allocator.dupeSentinel(u8, text, 0) catch null;
             if (ztext) |z| {
                 defer ui.allocator.free(z);
                 rl.setClipboardText(z);
@@ -943,31 +1349,42 @@ fn pushCellWidthColored(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, ro
             ui.last_cell_click_time = -1;
         }
     }
-    rl.drawLine(@intFromFloat(x.* + sw), @intFromFloat(y), @intFromFloat(x.* + sw), @intFromFloat(y + h), colors.border.alpha(0.6));
-    drawTextClipped(ui, text, rect(x.* + scale(ui, 6), y + scale(ui, 5), sw - scale(ui, 12), h - scale(ui, 8)), color);
+    rl.drawRectangleRec(rect(x.* + sw - 1, y + scale(ui, 6), 1, h - scale(ui, 12)), colors.border.alpha(0.45));
+    if (pill and text.len > 0) {
+        const text_w = measureText(ui, text, sw - scale(ui, 20));
+        const pill_h = scale(ui, 20);
+        const pill_r = rect(x.* + scale(ui, 8), y + (h - pill_h) * 0.5, text_w + scale(ui, 26), pill_h);
+        rrect(pill_r, pill_h * 0.5, color.alpha(0.14));
+        drawDot(vec(pill_r.x + scale(ui, 11), pill_r.y + pill_h * 0.5), scale(ui, 3), color);
+        drawTextClipped(ui, text, rect(pill_r.x + scale(ui, 18), pill_r.y, pill_r.width - scale(ui, 22), pill_h), color);
+    } else {
+        drawTextClipped(ui, text, rect(x.* + scale(ui, 10), y + scale(ui, 5), sw - scale(ui, 18), h - scale(ui, 9)), color);
+    }
     x.* += sw;
 }
 
 fn pushHashCell(ui: *UiState, x: *f32, y: f32, h: f32, column: usize, row: usize, text: []const u8) void {
-    if (!ui.app.uppercase) return pushCellColored(ui, x, y, h, column, row, text, colors.hash_value);
+    if (!ui.app.uppercase) return pushCellColored(ui, x, y, h, column, row, text, colors.hash_value, false);
     var buf: [128]u8 = undefined;
-    pushCellColored(ui, x, y, h, column, row, uppercaseInto(&buf, text), colors.hash_value);
+    pushCellColored(ui, x, y, h, column, row, uppercaseInto(&buf, text), colors.hash_value, false);
 }
 
 fn statusColor(status: []const u8) Color {
-    if (std.mem.indexOf(u8, status, "错误") != null) return colors.danger;
+    if (std.mem.indexOf(u8, status, "错误") != null or std.mem.indexOf(u8, status, "失败") != null) return colors.danger;
     if (std.mem.eql(u8, status, "完成")) return colors.success;
     if (std.mem.eql(u8, status, "排队中") or std.mem.eql(u8, status, "等待中")) return colors.warning;
     return colors.accent;
 }
 
-fn drawHorizontalScroll(ui: *UiState, area: Rect, content_w: f32) void {
-    rl.drawRectangleRounded(area, 0.45, 8, colors.scrollbar_track);
-    const max_scroll = @max(0, content_w - area.width);
-    if (max_scroll <= 0) return;
-    const handle_w = @max(scale(ui, 56), area.width * (area.width / content_w));
+fn drawHorizontalScroll(ui: *UiState, area: Rect, content_w: f32, view_w: f32) void {
+    const max_scroll = @max(0, content_w - view_w);
+    if (max_scroll <= 0) {
+        ui.dragging_hscroll = false;
+        return;
+    }
+    const handle_w = @max(scale(ui, 56), area.width * (view_w / content_w));
     const range = area.width - handle_w;
-    var handle_x = area.x + range * (ui.table_scroll_x / max_scroll);
+    var handle_x = area.x + range * std.math.clamp(ui.table_scroll_x / max_scroll, 0, 1);
     var handle = rect(handle_x, area.y + scale(ui, 2), handle_w, area.height - scale(ui, 4));
     const mouse = rl.getMousePosition();
     const hover = rl.checkCollisionPointRec(mouse, handle);
@@ -978,25 +1395,31 @@ fn drawHorizontalScroll(ui: *UiState, area: Rect, content_w: f32) void {
         } else {
             handle_x = std.math.clamp(mouse.x - handle_w * 0.5, area.x, area.x + range);
             ui.hscroll_grab_offset = handle_w * 0.5;
-            ui.table_scroll_x = ((handle_x - area.x) / range) * max_scroll;
+            ui.scroll_target_x = ((handle_x - area.x) / range) * max_scroll;
         }
     }
     if (!rl.isMouseButtonDown(.left)) ui.dragging_hscroll = false;
     if (ui.dragging_hscroll) {
         handle_x = std.math.clamp(mouse.x - ui.hscroll_grab_offset, area.x, area.x + range);
-        ui.table_scroll_x = ((handle_x - area.x) / range) * max_scroll;
+        ui.scroll_target_x = ((handle_x - area.x) / range) * max_scroll;
+        ui.table_scroll_x = ui.scroll_target_x;
     }
     handle.x = handle_x;
-    rl.drawRectangleRounded(handle, 0.7, 8, if (ui.dragging_hscroll) colors.accent else if (hover) colors.accent_hover else colors.scrollbar_thumb);
+    rrect(rect(area.x, area.y + 3, area.width, @max(2, area.height - 6)), @max(1, (area.height - 6) * 0.5), colors.scrollbar_track);
+    const hover_t = anim(ui, widgetId(0x5c01, area), if (hover or ui.dragging_hscroll) 1 else 0, 16);
+    const thumb = rl.colorLerp(colors.scrollbar_thumb, colors.accent_hover, hover_t);
+    rrect(handle, handle.height * 0.5, if (ui.dragging_hscroll) colors.accent else thumb);
 }
 
 fn drawVerticalScroll(ui: *UiState, area: Rect, content_h: f32) void {
-    rl.drawRectangleRounded(area, 0.45, 8, colors.scrollbar_track);
     const max_scroll = @max(0, content_h - area.height);
-    if (max_scroll <= 0) return;
+    if (max_scroll <= 0) {
+        ui.dragging_vscroll = false;
+        return;
+    }
     const handle_h = @max(scale(ui, 56), area.height * (area.height / content_h));
     const range = area.height - handle_h;
-    var handle_y = area.y + range * (ui.table_scroll_y / max_scroll);
+    var handle_y = area.y + range * std.math.clamp(ui.table_scroll_y / max_scroll, 0, 1);
     var handle = rect(area.x + scale(ui, 2), handle_y, area.width - scale(ui, 4), handle_h);
     const mouse = rl.getMousePosition();
     const hover = rl.checkCollisionPointRec(mouse, handle);
@@ -1007,21 +1430,25 @@ fn drawVerticalScroll(ui: *UiState, area: Rect, content_h: f32) void {
         } else {
             handle_y = std.math.clamp(mouse.y - handle_h * 0.5, area.y, area.y + range);
             ui.vscroll_grab_offset = handle_h * 0.5;
-            ui.table_scroll_y = ((handle_y - area.y) / range) * max_scroll;
+            ui.scroll_target_y = ((handle_y - area.y) / range) * max_scroll;
         }
     }
     if (!rl.isMouseButtonDown(.left)) ui.dragging_vscroll = false;
     if (ui.dragging_vscroll) {
         handle_y = std.math.clamp(mouse.y - ui.vscroll_grab_offset, area.y, area.y + range);
-        ui.table_scroll_y = ((handle_y - area.y) / range) * max_scroll;
+        ui.scroll_target_y = ((handle_y - area.y) / range) * max_scroll;
+        ui.table_scroll_y = ui.scroll_target_y;
     }
     handle.y = handle_y;
-    rl.drawRectangleRounded(handle, 0.7, 8, if (ui.dragging_vscroll) colors.accent else if (hover) colors.accent_hover else colors.scrollbar_thumb);
+    rrect(rect(area.x + 3, area.y, @max(2, area.width - 6), area.height), @max(1, (area.width - 6) * 0.5), colors.scrollbar_track);
+    const hover_t = anim(ui, widgetId(0x5c02, area), if (hover or ui.dragging_vscroll) 1 else 0, 16);
+    const thumb = rl.colorLerp(colors.scrollbar_thumb, colors.accent_hover, hover_t);
+    rrect(handle, handle.width * 0.5, if (ui.dragging_vscroll) colors.accent else thumb);
 }
 
 fn isColumnVisible(options: hash.HashOptions, column: usize) bool {
     if (column <= 1 or column >= 10) return true;
-    const algorithm: hash.Algorithm = @enumFromInt(column - 2);
+    const algorithm: hash.Algorithm = @fromBackingInt(@intCast(column - 2));
     return options.enabled(algorithm);
 }
 
@@ -1031,7 +1458,7 @@ fn columnLabel(column: usize) []const u8 {
         1 => "大小",
         10 => "状态",
         11 => "完整路径",
-        else => algorithmLabelZ(@enumFromInt(column - 2)),
+        else => algorithmLabelZ(@fromBackingInt(@intCast(column - 2))),
     };
 }
 
@@ -1075,7 +1502,7 @@ fn totalTableWidth(ui: *UiState, options: hash.HashOptions, viewport_w: f32) f32
 fn fixedTableWidth(ui: *const UiState, options: hash.HashOptions) f32 {
     var total = ui.column_widths[0] + ui.column_widths[1] + ui.column_widths[10];
     for (hash.all_algorithms) |algorithm| {
-        if (options.enabled(algorithm)) total += ui.column_widths[2 + @intFromEnum(algorithm)];
+        if (options.enabled(algorithm)) total += ui.column_widths[2 + @backingInt(algorithm)];
     }
     return scale(ui, total);
 }
@@ -1084,19 +1511,243 @@ fn pathColumnWidth(ui: *const UiState, options: hash.HashOptions, viewport_w: f3
     return @max(scale(ui, ui.column_widths[11]), viewport_w - fixedTableWidth(ui, options));
 }
 
-fn toolButton(ui: *UiState, r: Rect, icon: Icon, label: []const u8) bool {
-    return toolButtonState(ui, r, icon, label, true, false);
+fn toolButtonEx(ui: *UiState, r: Rect, icon: Icon, label: []const u8, kind: ButtonKind, enabled: bool, active: bool) bool {
+    const base = switch (kind) {
+        .primary => colors.accent,
+        .danger => if (active) colors.danger else colors.button,
+        .normal => colors.button,
+    };
+    const hover_color = switch (kind) {
+        .primary => colors.accent_hover,
+        .danger => if (active) colors.danger_hover else colors.button_hover,
+        .normal => colors.button_hover,
+    };
+    const down_color = switch (kind) {
+        .primary => colors.accent_down,
+        .danger => if (active) colors.danger_down else colors.button_down,
+        .normal => colors.button_down,
+    };
+    const visual = buttonBaseVisual(ui, r, base, hover_color, down_color, enabled);
+    if (active and kind != .primary) {
+        const body = rect(r.x, r.y + visual.lift, r.width, r.height);
+        rrect(body, scale(ui, layout.button_radius), colors.accent.alpha(0.10 + 0.06 * visual.hover_t));
+        rrectLines(body, scale(ui, layout.button_radius), 1, colors.accent.alpha(0.42));
+    }
+    const foreground = if (!enabled)
+        colors.muted.alpha(0.55)
+    else if (kind == .primary)
+        Color.init(255, 255, 255, 255)
+    else if (active)
+        colors.accent_hover
+    else
+        colors.text;
+    const icon_size = @min(scale(ui, 15), r.height - scale(ui, 10));
+    const icon_y = snapToPhysicalPixel(ui, r.y + visual.lift + (r.height - icon_size) * 0.5);
+    if (label.len == 0) {
+        drawIcon(ui, icon, rect(r.x + (r.width - icon_size) * 0.5, icon_y, icon_size, icon_size), foreground);
+        return visual.clicked;
+    }
+    drawIcon(ui, icon, rect(r.x + scale(ui, 11), icon_y, icon_size, icon_size), foreground);
+    drawTextClipped(ui, label, rect(r.x + scale(ui, 33), r.y + visual.lift, r.width - scale(ui, 40), r.height), foreground);
+    return visual.clicked;
 }
 
-fn toolButtonState(ui: *UiState, r: Rect, icon: Icon, label: []const u8, enabled: bool, active: bool) bool {
-    const base = if (active) colors.danger else colors.button;
-    const visual = buttonBaseVisual(ui, r, base, if (active) colors.close_hover else colors.button_hover, if (active) colors.close_down else colors.button_down, enabled);
-    const foreground = if (enabled) colors.text else colors.muted.alpha(0.62);
-    const icon_size = @min(scale(ui, 16), r.height - scale(ui, 8));
-    const icon_y = snapToPhysicalPixel(ui, r.y + (r.height - icon_size) * 0.5);
-    drawIcon(ui, icon, rect(r.x + scale(ui, 8), icon_y, icon_size, icon_size), foreground);
-    drawTextClipped(ui, label, rect(r.x + scale(ui, 30), r.y + scale(ui, 6), r.width - scale(ui, 34), r.height - scale(ui, 8)), foreground);
+fn optionChip(ui: *UiState, r: Rect, label: []const u8, t: f32) bool {
+    const mouse = rl.getMousePosition();
+    const hover = !ui.pointer_blocked and rl.checkCollisionPointRec(mouse, r);
+    const pressed = hover and rl.isMouseButtonDown(.left);
+    const hover_t = anim(ui, widgetId(0xc40c, r), if (hover) 1 else 0, 18);
+    if (hover) requestCursor(ui, .pointing_hand);
+    const neutral = rl.colorLerp(colors.panel, colors.elevated, hover_t);
+    const bg = rl.colorLerp(neutral, Color.init(27, 52, 85, 255), t);
+    const lift: f32 = if (pressed) scale(ui, 0.5) else 0;
+    const body = rect(r.x, r.y + lift, r.width, r.height);
+    rrect(body, scale(ui, layout.button_radius), bg);
+    rrectLines(body, scale(ui, layout.button_radius), 1, rl.colorLerp(colors.border, colors.accent.alpha(0.85), @max(t, hover_t * 0.55)));
+
+    const box_size = scale(ui, 16);
+    const box = rect(body.x + scale(ui, 8), body.y + (body.height - box_size) * 0.5, box_size, box_size);
+    rrect(box, scale(ui, 4), rl.colorLerp(colors.input, colors.accent, t));
+    rrectLines(box, scale(ui, 4), 1, rl.colorLerp(colors.border_strong, colors.accent_hover, t));
+    if (t > 0.02) {
+        const inset = box_size * (0.16 + 0.10 * (1 - t));
+        drawIcon(ui, .check, rect(box.x + inset, box.y + inset, box_size - inset * 2, box_size - inset * 2), Color.init(255, 255, 255, @intFromFloat(255 * std.math.clamp(t, 0, 1))));
+    }
+    const label_color = rl.colorLerp(colors.muted, colors.text, @max(t, hover_t * 0.4));
+    drawTextClipped(ui, label, rect(box.x + box_size + scale(ui, 8), body.y, body.width - box_size - scale(ui, 24), body.height), label_color);
+    return hover and rl.isMouseButtonReleased(.left);
+}
+
+fn buttonBaseVisual(ui: *UiState, r: Rect, base: Color, hover_color: Color, down_color: Color, enabled: bool) ButtonVisual {
+    const mouse = rl.getMousePosition();
+    const hover = enabled and !ui.pointer_blocked and rl.checkCollisionPointRec(mouse, r);
+    const down = hover and rl.isMouseButtonDown(.left);
+    const hover_t = anim(ui, widgetId(0x8b01, r), if (hover) 1 else 0, 18);
+    if (hover and enabled) requestCursor(ui, .pointing_hand);
+    const lift: f32 = if (down) scale(ui, 1) else -scale(ui, 1) * hover_t * 0.6;
+    const body = rect(r.x, r.y + lift, r.width, r.height);
+    const radius = scale(ui, layout.button_radius);
+    drawShadow(body, radius, @intFromFloat(42.0 * hover_t));
+    rrect(body, radius, if (!enabled) colors.button_disabled else if (down) down_color else rl.colorLerp(base, hover_color, hover_t));
+    rrectLines(body, radius, 1, if (!enabled) colors.border else rl.colorLerp(colors.border, colors.accent.alpha(0.8), hover_t));
+    return .{ .clicked = hover and rl.isMouseButtonReleased(.left), .hovered = hover, .pressed = down, .hover_t = hover_t, .lift = lift };
+}
+
+fn filterButton(ui: *UiState, r: Rect) bool {
+    const previous_blocked = ui.pointer_blocked;
+    ui.pointer_blocked = false;
+    const visual = buttonBaseVisual(ui, r, colors.button, colors.button_hover, colors.button_down, true);
+    ui.pointer_blocked = previous_blocked;
+    const chevron = anim(ui, widgetId(0x7f11, r), if (ui.filter_open) 1 else 0, 20);
+    const label = currentFilterLabel(ui);
+    const label_color = if (ui.filter_column == @backingInt(FilterColumn.all)) colors.muted else colors.accent_hover;
+    drawTextClipped(ui, label, rect(r.x + scale(ui, 12), r.y + visual.lift, r.width - scale(ui, 36), r.height), label_color);
+    const icon_size = scale(ui, 14);
+    const icon_rect = rect(r.x + r.width - scale(ui, 24), r.y + visual.lift + (r.height - icon_size) * 0.5, icon_size, icon_size);
+    const rotated = rect(icon_rect.x, icon_rect.y + chevron * scale(ui, 1.5), icon_rect.width, icon_rect.height);
+    drawIcon(ui, .chevron_down, rotated, rl.colorLerp(colors.muted, colors.text, chevron));
     return visual.clicked;
+}
+
+fn drawFilterPopup(ui: *UiState) void {
+    ui.filter_anim = approach(ui.filter_anim, if (ui.filter_open) 1 else 0, 22, ui.dt);
+    if (ui.filter_anim <= 0.01) return;
+    const t = easeOutCubic(ui.filter_anim);
+    const row_h = scale(ui, 27);
+    const w = @max(ui.filter_button_rect.width, scale(ui, 172));
+    const popup_h = row_h * @as(f32, @floatFromInt(filter_labels.len)) + scale(ui, 10);
+    const screen_w: f32 = @floatFromInt(rl.getScreenWidth());
+    const screen_h: f32 = @floatFromInt(rl.getScreenHeight());
+    const x = std.math.clamp(ui.filter_button_rect.x, scale(ui, 6), @max(scale(ui, 6), screen_w - w - scale(ui, 6)));
+    var y = ui.filter_button_rect.y + ui.filter_button_rect.height + scale(ui, 4);
+    if (y + popup_h > screen_h - scale(ui, 6)) y = @max(scale(ui, 6), ui.filter_button_rect.y - popup_h - scale(ui, 4));
+    y += (1 - t) * scale(ui, 6);
+    const alpha = std.math.clamp(t, 0, 1);
+    const popup = rect(x, y, w, popup_h);
+    drawShadow(popup, scale(ui, 9), @intFromFloat(120 * alpha));
+    rrect(popup, scale(ui, 9), colors.panel.alpha(alpha));
+    rrectLines(popup, scale(ui, 9), 1, colors.border.alpha(alpha));
+
+    const mouse = rl.getMousePosition();
+    const interactive = ui.filter_open and t > 0.5;
+    for (filter_labels, 0..) |label, index| {
+        const row_rect = rect(x + scale(ui, 5), y + scale(ui, 5) + row_h * @as(f32, @floatFromInt(index)), w - scale(ui, 10), row_h);
+        const hover = interactive and rl.checkCollisionPointRec(mouse, row_rect);
+        const hover_t = anim(ui, widgetId(0x7f20 + index, row_rect), if (hover) 1 else 0, 20);
+        if (hover_t > 0.02) rrect(row_rect, scale(ui, 6), colors.elevated.alpha(0.9 * hover_t * alpha));
+        const active = ui.filter_column == @as(i32, @intCast(index));
+        if (active) {
+            rrect(row_rect, scale(ui, 6), colors.accent.alpha(0.14 * alpha));
+            drawDot(vec(row_rect.x + scale(ui, 6), row_rect.y + row_rect.height * 0.5), scale(ui, 2.5), colors.accent.alpha(alpha));
+        }
+        drawTextClipped(ui, label, rect(row_rect.x + scale(ui, 15), row_rect.y, row_rect.width - scale(ui, 22), row_rect.height), (if (active) colors.accent_hover else colors.text).alpha(alpha));
+        if (active) drawIcon(ui, .check, rect(row_rect.x + row_rect.width - scale(ui, 22), row_rect.y + (row_rect.height - scale(ui, 13)) * 0.5, scale(ui, 13), scale(ui, 13)), colors.accent.alpha(alpha));
+        if (hover and rl.isMouseButtonReleased(.left)) {
+            ui.filter_column = @intCast(index);
+            ui.filter_open = false;
+            ui.scroll_target_y = 0;
+        }
+    }
+    if (rl.isMouseButtonReleased(.left) and !rl.checkCollisionPointRec(mouse, popup) and !rl.checkCollisionPointRec(mouse, ui.filter_button_rect)) ui.filter_open = false;
+}
+
+fn showToast(ui: *UiState, message: []const u8) void {
+    ui.toast_text = message;
+    ui.toast_start = ui.now;
+    ui.toast_duration = 1.9;
+    ui.toast_until = ui.now + ui.toast_duration;
+}
+
+fn drawToast(ui: *UiState, screen_w: f32, screen_h: f32) void {
+    const remaining = ui.toast_until - ui.now;
+    if (remaining <= 0 or ui.toast_text.len == 0) return;
+    const elapsed = @max(0, ui.now - ui.toast_start);
+    const enter = easeOutCubic(@floatCast(elapsed / 0.26));
+    const leave = easeOutCubic(@floatCast(std.math.clamp(remaining / 0.34, 0, 1)));
+    const alpha = @min(enter, leave);
+    const toast_w = @min(screen_w - scale(ui, 24), measureText(ui, ui.toast_text, screen_w) + scale(ui, 52));
+    const toast_h = scale(ui, 38);
+    const toast = rect((screen_w - toast_w) * 0.5, screen_h - toast_h - scale(ui, 26) + (1 - enter) * scale(ui, 20), toast_w, toast_h);
+    drawShadow(toast, toast_h * 0.5, @intFromFloat(110 * alpha));
+    rrect(toast, toast_h * 0.5, colors.panel2.alpha(alpha));
+    rrectLines(toast, toast_h * 0.5, 1, colors.accent.alpha(0.6 * alpha));
+    const icon_size = scale(ui, 16) * (0.7 + 0.3 * enter);
+    drawIcon(ui, .check, rect(toast.x + scale(ui, 13), toast.y + (toast.height - icon_size) * 0.5, icon_size, icon_size), colors.success.alpha(alpha));
+    drawTextCentered(ui, ui.toast_text, rect(toast.x + scale(ui, 34), toast.y, toast.width - scale(ui, 46), toast.height), colors.text.alpha(alpha));
+}
+
+fn drawSearch(ui: *UiState, r: Rect) void {
+    const mouse = rl.getMousePosition();
+    const hovered = !ui.pointer_blocked and rl.checkCollisionPointRec(mouse, r);
+    const text = ui.search_buf[0..ui.search_len];
+    const clear = rect(r.x + r.width - scale(ui, 25), r.y + (r.height - scale(ui, 19)) * 0.5, scale(ui, 19), scale(ui, 19));
+    const clear_hover = text.len > 0 and !ui.pointer_blocked and rl.checkCollisionPointRec(mouse, clear);
+    if (!ui.pointer_blocked and rl.isMouseButtonPressed(.left) and !clear_hover) ui.search_active = hovered;
+    if (hovered or ui.search_active) requestCursor(ui, .ibeam);
+
+    ui.search_focus_anim = approach(ui.search_focus_anim, if (ui.search_active) 1 else 0, 15, ui.dt);
+    const hover_t = anim(ui, widgetId(0x5ea2, r), if (hovered) 1 else 0, 18);
+    rrect(r, scale(ui, 7), colors.input);
+    if (ui.search_focus_anim > 0.02) rrectLines(rect(r.x - 2, r.y - 2, r.width + 4, r.height + 4), scale(ui, 9), 1, colors.accent.alpha(0.20 * ui.search_focus_anim));
+    rrectLines(r, scale(ui, 7), 1, rl.colorLerp(colors.border, colors.accent, @max(ui.search_focus_anim, hover_t * 0.45)));
+
+    const icon_center = vec(r.x + scale(ui, 16), r.y + r.height * 0.5);
+    const icon_tint = rl.colorLerp(colors.faint, colors.accent_hover, ui.search_focus_anim);
+    rl.drawRing(icon_center, scale(ui, 4.1) - scale(ui, 0.7), scale(ui, 4.1) + scale(ui, 0.7), 0, 360, 32, icon_tint);
+    rl.drawLineEx(vec(icon_center.x + scale(ui, 4.5), icon_center.y + scale(ui, 4.5)), vec(icon_center.x + scale(ui, 7.4), icon_center.y + scale(ui, 7.4)), scale(ui, 1.4), icon_tint);
+
+    const text_rect = rect(r.x + scale(ui, 27), r.y + scale(ui, 4), r.width - scale(ui, 54), r.height - scale(ui, 8));
+    drawTextClipped(ui, if (text.len == 0) "搜索" else text, text_rect, if (text.len == 0) colors.faint else colors.text);
+
+    if (text.len > 0) {
+        if (clear_hover) {
+            rrect(clear, clear.width * 0.5, colors.elevated);
+            requestCursor(ui, .pointing_hand);
+        }
+        drawIcon(ui, .close, rect(clear.x + scale(ui, 4.5), clear.y + scale(ui, 4.5), clear.width - scale(ui, 9), clear.height - scale(ui, 9)), if (clear_hover) colors.text else colors.faint);
+        if (clear_hover and rl.isMouseButtonReleased(.left)) {
+            @memset(&ui.search_buf, 0);
+            ui.search_len = 0;
+        }
+    }
+
+    if (ui.search_active) {
+        const phase = @mod(@as(f32, @floatCast(ui.now)), 1.08) / 1.08;
+        const blink = 1.0 - std.math.clamp((phase - 0.56) / 0.10, 0, 1);
+        if (blink > 0.02) {
+            const text_w = measureText(ui, text, text_rect.width - scale(ui, 4));
+            const caret_x = @min(r.x + scale(ui, 27) + text_w, clear.x - scale(ui, 4));
+            rrect(rect(caret_x, r.y + scale(ui, 9), scale(ui, 1.6), r.height - scale(ui, 18)), scale(ui, 1), colors.accent.alpha(blink));
+        }
+    }
+}
+
+fn handleShortcuts(ui: *UiState) void {
+    const ctrl = rl.isKeyDown(.left_control) or rl.isKeyDown(.right_control);
+    if (ctrl and rl.isKeyPressed(.f)) {
+        ui.search_active = true;
+        ui.filter_open = false;
+    }
+    if (rl.isKeyPressed(.escape)) {
+        if (ui.filter_open) ui.filter_open = false else if (ui.search_active) ui.search_active = false;
+    }
+    if (ctrl and !ui.search_active) {
+        if (rl.isKeyPressed(.c)) copyRows(ui, true) catch {};
+        if (rl.isKeyPressed(.s)) saveRows(ui, true) catch {};
+    }
+    if (!ui.search_active) {
+        const page = @max(scale(ui, 120), ui.table_body.height * 0.9);
+        if (rl.isKeyPressed(.page_down)) ui.scroll_target_y += page;
+        if (rl.isKeyPressed(.page_up)) ui.scroll_target_y -= page;
+        if (rl.isKeyPressed(.home)) ui.scroll_target_y = 0;
+        if (rl.isKeyPressed(.end)) ui.scroll_target_y = std.math.inf(f32);
+    }
+    if (rl.isKeyPressed(.enter)) {
+        worker.lockMutex(&ui.app.mutex);
+        const processing = ui.app.processing;
+        ui.app.mutex.unlock();
+        if (!processing) ui.app.start() catch {};
+    }
 }
 
 fn configureContextMenu(ui: *UiState) void {
@@ -1116,121 +1767,6 @@ fn configureContextMenu(ui: *UiState) void {
     worker.lockMutex(&ui.app.mutex);
     defer ui.app.mutex.unlock();
     ui.app.setMessageLocked(if (enable) "右键菜单已开启" else "右键菜单已关闭");
-}
-
-fn iconButton(ui: *UiState, r: Rect, icon: Icon, base: Color) bool {
-    const visual = if (icon == .close)
-        buttonBaseVisual(ui, r, base, colors.close_hover, colors.close_down, true)
-    else
-        buttonBaseVisual(ui, r, base, colors.button_hover, colors.button_down, true);
-    const offset = if (visual.pressed) scale(ui, 1) else 0;
-    drawIcon(ui, icon, rect(r.x + scale(ui, 8), r.y + scale(ui, 6) + offset, r.width - scale(ui, 16), r.height - scale(ui, 12)), colors.text);
-    return visual.clicked;
-}
-
-fn buttonBase(ui: *UiState, r: Rect, base: Color) bool {
-    return buttonBaseColors(ui, r, base, colors.button_hover, colors.button_down);
-}
-
-fn buttonBaseColors(ui: *UiState, r: Rect, base: Color, hover_color: Color, down_color: Color) bool {
-    return buttonBaseVisual(ui, r, base, hover_color, down_color, true).clicked;
-}
-
-fn buttonBaseVisual(ui: *const UiState, r: Rect, base: Color, hover_color: Color, down_color: Color, enabled: bool) ButtonVisual {
-    const mouse = rl.getMousePosition();
-    const hover = enabled and !ui.pointer_blocked and rl.checkCollisionPointRec(mouse, r);
-    const down = hover and rl.isMouseButtonDown(.left);
-    rl.drawRectangleRounded(rect(r.x, r.y + 1, r.width, r.height), 0.12, 6, Color.init(0, 0, 0, 80));
-    rl.drawRectangleRounded(r, 0.12, 6, if (!enabled) colors.button_disabled else if (down) down_color else if (hover) hover_color else base);
-    rl.drawRectangleRoundedLinesEx(r, 0.12, 6, 1, if (hover) colors.accent.alpha(0.78) else colors.border);
-    return .{ .clicked = hover and rl.isMouseButtonReleased(.left), .hovered = hover, .pressed = down };
-}
-
-fn filterButton(ui: *UiState, r: Rect) bool {
-    const previous_blocked = ui.pointer_blocked;
-    ui.pointer_blocked = false;
-    const visual = buttonBaseVisual(ui, r, colors.button, colors.button_hover, colors.button_down, true);
-    ui.pointer_blocked = previous_blocked;
-    const offset = if (visual.pressed) scale(ui, 1) else 0;
-    drawTextClipped(ui, currentFilterLabel(ui), rect(r.x + scale(ui, 10), r.y + scale(ui, 6) + offset, r.width - scale(ui, 34), r.height - scale(ui, 8)), colors.text);
-    drawIcon(ui, .chevron_down, rect(r.x + r.width - scale(ui, 24), r.y + scale(ui, 8) + offset, scale(ui, 14), scale(ui, 14)), colors.text);
-    return visual.clicked;
-}
-
-fn drawFilterPopup(ui: *UiState) void {
-    const row_h = scale(ui, 24);
-    const w = @max(ui.filter_button_rect.width, scale(ui, 154));
-    const popup_h = row_h * @as(f32, @floatFromInt(filter_labels.len));
-    const screen_w: f32 = @floatFromInt(rl.getScreenWidth());
-    const screen_h: f32 = @floatFromInt(rl.getScreenHeight());
-    const x = std.math.clamp(ui.filter_button_rect.x, scale(ui, 4), @max(scale(ui, 4), screen_w - w - scale(ui, 4)));
-    var y = ui.filter_button_rect.y + ui.filter_button_rect.height + scale(ui, 3);
-    if (y + popup_h > screen_h - scale(ui, 4)) {
-        y = @max(scale(ui, 4), ui.filter_button_rect.y - popup_h - scale(ui, 3));
-    }
-    const mouse = rl.getMousePosition();
-    const popup = rect(x, y, w, popup_h);
-    rl.drawRectangleRounded(rect(popup.x + scale(ui, 2), popup.y + scale(ui, 3), popup.width, popup.height), 0.04, 6, Color.init(0, 0, 0, 100));
-    rl.drawRectangleRounded(popup, 0.04, 6, colors.panel);
-    rl.drawRectangleRoundedLinesEx(popup, 0.04, 6, 1, colors.border);
-    for (filter_labels, 0..) |label, i| {
-        const rr = rect(x, y + row_h * @as(f32, @floatFromInt(i)), w, row_h);
-        const hover = rl.checkCollisionPointRec(mouse, rr);
-        if (hover) rl.drawRectangleRounded(rect(rr.x + 2, rr.y + 1, rr.width - 4, rr.height - 2), 0.08, 4, colors.button_hover);
-        drawTextClipped(ui, label, rect(rr.x + scale(ui, 8), rr.y + scale(ui, 4), rr.width - scale(ui, 12), rr.height - scale(ui, 6)), colors.text);
-        if (hover and rl.isMouseButtonReleased(.left)) {
-            ui.filter_column = @intCast(i);
-            ui.filter_open = false;
-        }
-    }
-    if (rl.isMouseButtonReleased(.left) and !rl.checkCollisionPointRec(mouse, popup) and !rl.checkCollisionPointRec(mouse, ui.filter_button_rect)) ui.filter_open = false;
-}
-
-fn showToast(ui: *UiState, message: []const u8) void {
-    ui.toast_text = message;
-    ui.toast_until = rl.getTime() + 1.8;
-}
-
-fn drawToast(ui: *UiState, screen_w: f32, screen_h: f32) void {
-    const remaining = ui.toast_until - rl.getTime();
-    if (remaining <= 0 or ui.toast_text.len == 0) return;
-    const toast_w = @min(screen_w - scale(ui, 24), measureText(ui, ui.toast_text, screen_w) + scale(ui, 44));
-    const toast_h = scale(ui, 36);
-    const toast = rect((screen_w - toast_w) * 0.5, screen_h - toast_h - scale(ui, 28), toast_w, toast_h);
-    const alpha: u8 = @intFromFloat(255 * std.math.clamp(remaining / 0.22, 0, 1));
-    rl.drawRectangleRounded(rect(toast.x + scale(ui, 2), toast.y + scale(ui, 3), toast.width, toast.height), 0.22, 8, Color.init(0, 0, 0, @intFromFloat(110 * @as(f32, @floatFromInt(alpha)) / 255)));
-    rl.drawRectangleRounded(toast, 0.22, 8, colors.panel2.alpha(alpha));
-    rl.drawRectangleRoundedLinesEx(toast, 0.22, 8, 1, colors.accent.alpha(alpha));
-    drawIcon(ui, .check, rect(toast.x + scale(ui, 10), toast.y + scale(ui, 10), scale(ui, 16), scale(ui, 16)), colors.success.alpha(alpha));
-    drawTextCentered(ui, ui.toast_text, rect(toast.x + scale(ui, 32), toast.y, toast.width - scale(ui, 42), toast.height), colors.text.alpha(alpha));
-}
-
-fn drawSearch(ui: *UiState, r: Rect) void {
-    const mouse = rl.getMousePosition();
-    const hovered = !ui.pointer_blocked and rl.checkCollisionPointRec(mouse, r);
-    if (!ui.pointer_blocked and rl.isMouseButtonPressed(.left)) ui.search_active = hovered;
-    if (hovered or ui.search_active) requestCursor(ui, .ibeam);
-    rl.drawRectangleRounded(r, 0.1, 6, colors.input);
-    rl.drawRectangleRoundedLinesEx(r, 0.1, 6, 1, if (ui.search_active) colors.accent else colors.border);
-    const text = ui.search_buf[0..ui.search_len];
-    drawTextClipped(ui, if (text.len == 0 and !ui.search_active) "搜索" else text, rect(r.x + scale(ui, 8), r.y + scale(ui, 6), r.width - scale(ui, 14), r.height - scale(ui, 8)), if (text.len == 0) colors.muted else colors.text);
-    if (ui.search_active and (@mod(@as(i32, @intFromFloat(rl.getTime() * 2)), 2) == 0)) {
-        const tw = measureText(ui, text, r.width - scale(ui, 18));
-        rl.drawLine(@intFromFloat(r.x + scale(ui, 9) + tw), @intFromFloat(r.y + scale(ui, 7)), @intFromFloat(r.x + scale(ui, 9) + tw), @intFromFloat(r.y + r.height - scale(ui, 7)), colors.text);
-    }
-}
-
-fn checkbox(ui: *UiState, r: Rect, label: []const u8, value: *bool) bool {
-    const mouse = rl.getMousePosition();
-    const hover = !ui.pointer_blocked and rl.checkCollisionPointRec(mouse, r);
-    if (hover and rl.isMouseButtonReleased(.left)) value.* = !value.*;
-    if (hover) rl.drawRectangleRounded(r, 0.12, 6, colors.panel2.alpha(0.72));
-    const box = rect(r.x, r.y + scale(ui, 3), scale(ui, 17), scale(ui, 17));
-    rl.drawRectangleRounded(box, 0.22, 6, if (value.*) colors.accent else colors.input);
-    rl.drawRectangleRoundedLinesEx(box, 0.22, 6, 1, if (hover) colors.accent_hover else colors.border);
-    if (value.*) drawIcon(ui, .check, rect(box.x + scale(ui, 3), box.y + scale(ui, 3), box.width - scale(ui, 6), box.height - scale(ui, 6)), colors.text);
-    drawTextClipped(ui, label, rect(r.x + scale(ui, 24), r.y + scale(ui, 2), r.width - scale(ui, 26), r.height - scale(ui, 4)), colors.text);
-    return hover and rl.isMouseButtonReleased(.left);
 }
 
 fn drawIcon(ui: *const UiState, icon: Icon, r: Rect, color: Color) void {
@@ -1319,7 +1855,7 @@ fn asciiFallback(text: []const u8, out: []i32) usize {
 fn rowMatches(ui: *UiState, row: worker.Row) bool {
     const needle = ui.search_buf[0..ui.search_len];
     if (needle.len == 0) return true;
-    const col: FilterColumn = @enumFromInt(std.math.clamp(ui.filter_column, 0, @intFromEnum(FilterColumn.path)));
+    const col: FilterColumn = @fromBackingInt(@intCast(std.math.clamp(ui.filter_column, 0, @backingInt(FilterColumn.path))));
     return switch (col) {
         .all => contains(row.file.name, needle) or contains(row.file.size_label, needle) or contains(row.file.path, needle) or resultContains(row.result, needle),
         .file => contains(row.file.name, needle),
@@ -1337,7 +1873,21 @@ fn resultContains(result: hash.HashResult, needle: []const u8) bool {
 }
 
 fn contains(haystack: []const u8, needle: []const u8) bool {
-    return std.ascii.indexOfIgnoreCase(haystack, needle) != null;
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    const last = haystack.len - needle.len;
+    var start: usize = 0;
+    while (start <= last) : (start += 1) {
+        var matched = true;
+        for (needle, 0..) |nc, i| {
+            if (std.ascii.toLower(haystack[start + i]) != std.ascii.toLower(nc)) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return true;
+    }
+    return false;
 }
 
 fn algorithmFromColumn(column: FilterColumn) hash.Algorithm {
@@ -1357,7 +1907,7 @@ fn algorithmFromColumn(column: FilterColumn) hash.Algorithm {
 fn copyRows(ui: *UiState, include_path: bool) !void {
     var out = try formatRows(ui, include_path);
     defer out.deinit(ui.allocator);
-    const z = try ui.allocator.dupeZ(u8, out.items);
+    const z = try ui.allocator.dupeSentinel(u8, out.items, 0);
     defer ui.allocator.free(z);
     rl.setClipboardText(z);
 }
@@ -1461,7 +2011,7 @@ fn uppercaseInto(buf: []u8, value: []const u8) []const u8 {
 }
 
 fn algorithmLabelZ(algorithm: hash.Algorithm) [:0]const u8 {
-    return algorithm_labels_z[@intFromEnum(algorithm)];
+    return algorithm_labels_z[@backingInt(algorithm)];
 }
 
 fn currentFilterLabel(ui: *const UiState) []const u8 {

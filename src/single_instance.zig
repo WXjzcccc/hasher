@@ -19,9 +19,9 @@ extern "user32" fn SendMessageW(hwnd: ?*anyopaque, message: u32, wparam: usize, 
 
 const error_already_exists: u32 = 183;
 const mutex_name = std.unicode.utf8ToUtf16LeStringLiteral("Local\\Hasher.SingleInstance");
-const window_title_u16 = std.unicode.utf8ToUtf16LeStringLiteral("Hasher 1.5");
+const window_title_u16 = std.unicode.utf8ToUtf16LeStringLiteral("Hasher 1.6");
 
-pub const window_title = "Hasher 1.5";
+pub const window_title = "Hasher 1.6";
 pub const context_payload_magic = "HSR1";
 
 pub const RequestQueue = struct {

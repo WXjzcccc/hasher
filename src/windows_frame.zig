@@ -210,7 +210,7 @@ fn hitTest(hwnd: ?*anyopaque) isize {
     if (!GetCursorPos(&point) or !ScreenToClient(hwnd, &point) or !GetClientRect(hwnd, &client)) return ht_client;
 
     const dpi = @max(@as(u32, 96), GetDpiForWindow(hwnd));
-    const title_height: i32 = @intCast((34 * dpi + 95) / 96);
+    const title_height: i32 = @intCast((40 * dpi + 95) / 96);
     const button_band: i32 = @intCast((138 * dpi + 95) / 96);
     if (point.y >= 0 and point.y < title_height and point.x >= 0 and point.x < client.right - button_band) return ht_caption;
     return ht_client;
