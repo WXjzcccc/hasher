@@ -212,6 +212,11 @@ const UiState = struct {
     font_codepoints: []i32 = &.{},
     font_render_scale: f32 = 0,
     font_codepoint_count: usize = 0,
+    /// Ink band of the loaded atlas, in drawing pixels, measured from the line
+    /// origin raylib passes to drawTextCodepoints. Used for vertical centering
+    /// so labels sit optically centered instead of on a guessed fudge factor.
+    font_ink_top: f32 = 0,
+    font_ink_height: f32 = 16,
     drawn_codepoints: std.AutoHashMap(i32, void),
     app_icon: rl.Texture2D = undefined,
     app_icon_loaded: bool = false,
@@ -308,7 +313,7 @@ fn defaultColumnOrder() [12]usize {
 
 const ui_text_samples = [_][]const u8{
     "Hasher",
-    "2.0",
+    "1.6",
     "开始",
     "停止",
     "清空",
@@ -526,6 +531,7 @@ fn loadFont(ui: *UiState) !void {
     ui.font_codepoints = try buildFontCodepoints(ui);
     ui.font = loadFontAtlas(ui, ui.font_codepoints) catch {
         ui.font = try rl.getFontDefault();
+        applyFontMetrics(ui, ui.font);
         ui.font_render_scale = ui.render_scale;
         ui.font_codepoint_count = ui.drawn_codepoints.count();
         return;
@@ -557,12 +563,58 @@ fn ensureFontCurrent(ui: *UiState) !void {
     ui.font_codepoint_count = ui.drawn_codepoints.count();
 }
 
-fn loadFontAtlas(ui: *const UiState, codepoints: []const i32) !rl.Font {
+fn loadFontAtlas(ui: *UiState, codepoints: []const i32) !rl.Font {
     const pixel_size = @max(1, @as(i32, @intFromFloat(@ceil(pixelScale(ui, logical_font_size)))));
     const font = try font_atlas.load(embedded_assets.ttf, pixel_size, codepoints);
     if (!font.isReady()) return error.FontLoadFailed;
     rl.setTextureFilter(font.texture, .bilinear);
+    applyFontMetrics(ui, font);
     return font;
+}
+
+/// Representative glyphs (Latin caps, digits, CJK ideographs) used to derive the
+/// vertical ink band. Scanning the whole atlas is not an option - a few
+/// outlier glyphs (full-width forms, unusual accents) would skew the band and
+/// push every label off center.
+const ink_sample_codepoints = [_]i32{ 'H', 'M', 'E', '0', '5', 0x4E2D, 0x6587, 0x56FD };
+
+/// Records the vertical ink band of the atlas so text can be centered by what is
+/// actually painted rather than by the em box. The band is derived from
+/// representative glyphs, with glyph padding removed so transparent padding does
+/// not inflate it; `font_ink_top` is the distance from the line origin raylib
+/// receives to the top of the ink.
+fn applyFontMetrics(ui: *UiState, font: rl.Font) void {
+    const base: f32 = @floatFromInt(@max(1, font.baseSize));
+    const k = logical_font_size / base;
+    const count: usize = if (font.glyphCount > 0) @intCast(font.glyphCount) else 0;
+
+    var top: f32 = std.math.floatMax(f32);
+    var bottom: f32 = -std.math.floatMax(f32);
+    for (ink_sample_codepoints) |cp| {
+        var index: ?usize = null;
+        for (0..count) |i| {
+            if (font.glyphs[i].value == cp) {
+                index = i;
+                break;
+            }
+        }
+        const i = index orelse continue;
+        const height = font.recs[i].height;
+        if (height <= 0) continue;
+        const glyph_top = @as(f32, @floatFromInt(font.glyphs[i].offsetY));
+        top = @min(top, glyph_top);
+        bottom = @max(bottom, glyph_top + height);
+    }
+
+    if (bottom > top) {
+        ui.font_ink_top = top * k;
+        ui.font_ink_height = (bottom - top) * k;
+    } else {
+        // No sample glyph matched (unexpected charset): fall back to the em box
+        // minus typical line gap so labels still sit close to centered.
+        ui.font_ink_top = logical_font_size * 0.16;
+        ui.font_ink_height = logical_font_size * 0.72;
+    }
 }
 
 fn buildFontCodepoints(ui: *UiState) ![]i32 {
@@ -842,7 +894,7 @@ fn drawTitleBar(ui: *UiState, w: f32) void {
     const title_w = measureText(ui, "Hasher", scale(ui, 200));
     const badge = rect(title_x + title_w + scale(ui, 8), (h - scale(ui, 18)) * 0.5, scale(ui, 36), scale(ui, 18));
     rrect(badge, scale(ui, 9), colors.accent.alpha(0.16));
-    drawTextCentered(ui, "2.0", badge, colors.accent_hover);
+    drawTextCentered(ui, "1.6", badge, colors.accent_hover);
 
     const button_w = scale(ui, 46);
     var x = w - button_w * 3;
@@ -1794,14 +1846,16 @@ fn iconToLucide(icon: Icon) lucide.Icon {
 }
 
 fn drawTextClipped(ui: *UiState, text: []const u8, r: Rect, color: Color) void {
-    drawTextClippedWithOffset(ui, text, r, color, -scale(ui, 2));
+    drawTextInRect(ui, text, r, color);
 }
 
 fn drawTextCentered(ui: *UiState, text: []const u8, r: Rect, color: Color) void {
-    drawTextClippedWithOffset(ui, text, r, color, 0);
+    drawTextInRect(ui, text, r, color);
 }
 
-fn drawTextClippedWithOffset(ui: *UiState, text: []const u8, r: Rect, color: Color, vertical_offset: f32) void {
+/// Draws one line of text centered by its ink band inside `r`, clipping and
+/// ellipsizing when it overflows.
+fn drawTextInRect(ui: *UiState, text: []const u8, r: Rect, color: Color) void {
     if (r.width <= 2 or r.height <= 2) return;
     trackDrawnText(ui, text) catch {};
     var cps: [512]i32 = undefined;
@@ -1817,7 +1871,7 @@ fn drawTextClippedWithOffset(ui: *UiState, text: []const u8, r: Rect, color: Col
     beginScissor(ui, rect(r.x, r.y - scale(ui, 2), r.width, r.height + scale(ui, 4)));
     defer rl.endScissorMode();
     const font_size = scale(ui, logical_font_size);
-    const y = r.y + @max(0, (r.height - font_size) * 0.5) + vertical_offset;
+    const y = r.y + (r.height - ui.font_ink_height) * 0.5 - ui.font_ink_top;
     const position = vec(snapToPhysicalPixel(ui, r.x), snapToPhysicalPixel(ui, y));
     rl.drawTextCodepoints(ui.font, cps[0..draw_n], position, font_size, scale(ui, 1), color);
 }
